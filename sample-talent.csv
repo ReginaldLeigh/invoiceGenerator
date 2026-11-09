@@ -1,0 +1,11 @@
+Invoice #,Invoice Date,Client,Client Address,Employee,Work Date,Hours,Pay Rate,Position,PO Number,Location,Shift
+TAL-501,11/14/2026,Northwind Studios,"500 King St W
+Toronto, ON M5V 1L9",Ana Silva,11/03/2026,8,45.00,Camera operator,PO-7781,Studio A,Day
+TAL-501,,,,Ana Silva,11/04/2026,7.5,45.00,Camera operator,PO-7781,Studio A,Day
+TAL-501,,,,Ana Silva,11/05/2026,9,45.00,Camera operator,PO-7781,Studio B,Night
+TAL-501,,,,Ben Okafor,11/03/2026,8,38.50,Grip,PO-7781,Studio A,Day
+TAL-501,,,,Ben Okafor,11/06/2026,10,38.50,Grip,PO-7781,Studio A,Day
+TAL-501,,,,Ben Okafor,11/06/2026,2,57.75,Grip (overtime),PO-7781,Studio A,Day
+TAL-502,11/14/2026,Harbour Events,"12 Water St
+Vancouver, BC V6B 1A1",Chloé Tremblay,10/30/2026,6,52.00,Makeup artist,HE-220,Pier 21,Evening
+TAL-502,,,,Chloé Tremblay,11/02/2026,6,52.00,Makeup artist,HE-220,Pier 21,Evening

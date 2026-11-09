@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <style>
+    :root { --accent:#1f4e79; --bg:#f4f6f9; --card:#fff; --text:#1d2330; --muted:#667085; --border:#d9dee7; --err:#b42318; --ok:#067647; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; background:var(--bg); color:var(--text); font-size:14px; }
+    main { max-width:920px; margin:0 auto; padding:24px 16px 64px; }
+    h1 { font-size:24px; margin:0 0 4px; }
+    .sub { color:var(--muted); margin:0 0 24px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:20px; margin-bottom:16px; }
+    .card h2 { font-size:16px; margin:0 0 4px; display:flex; align-items:center; gap:8px; }
+    .step { display:inline-flex; width:24px; height:24px; border-radius:50%; background:var(--accent); color:#fff; font-size:12px; align-items:center; justify-content:center; }
+    .help { color:var(--muted); margin:0 0 16px; font-size:13px; }
+    .drop { border:2px dashed var(--border); border-radius:8px; padding:28px; text-align:center; cursor:pointer; transition:border-color .15s, background .15s; }
+    .drop:hover, .drop.over { border-color:var(--accent); background:#f0f5fb; }
+    .drop input { display:none; }
+    .drop strong { color:var(--accent); }
+    .filename { margin-top:8px; font-weight:600; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px 16px; }
+    label { display:block; font-weight:600; font-size:13px; margin-bottom:4px; }
+    label .req { color:var(--err); }
+    label .hint { font-weight:400; color:var(--muted); font-size:12px; }
+    input[type=text], input[type=email], input[type=number], select, textarea { width:100%; padding:8px 10px; border:1px solid var(--border); border-radius:6px; font:inherit; background:#fff; color:inherit; }
+    input:focus, textarea:focus { outline:2px solid var(--accent); outline-offset:-1px; border-color:var(--accent); }
+    input.col { text-transform:uppercase; font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:600; width:80px; }
+    input.col::placeholder { color:#b0b7c3; font-weight:400; }
+    input.invalid { border-color:var(--err); background:#fff5f4; }
+    textarea { resize:vertical; min-height:60px; }
+    .check { display:flex; align-items:center; gap:8px; font-weight:400; margin-top:16px; }
+    .preview-wrap { overflow-x:auto; margin-top:16px; border:1px solid var(--border); border-radius:6px; }
+    table.preview { border-collapse:collapse; font-size:12px; min-width:100%; }
+    table.preview th, table.preview td { border:1px solid var(--border); padding:4px 8px; white-space:nowrap; max-width:180px; overflow:hidden; text-overflow:ellipsis; }
+    table.preview th { background:#eef1f5; cursor:pointer; font-family:ui-monospace,Menlo,Consolas,monospace; }
+    table.preview th:hover { background:var(--accent); color:#fff; }
+    table.preview th.mapped { background:#dbe8f5; }
+    table.preview td.rownum { background:#eef1f5; color:var(--muted); text-align:right; }
+    table.preview tr.header td { font-weight:600; }
+    .preview-note { color:var(--muted); font-size:12px; margin:6px 0 0; }
+    button { background:var(--accent); color:#fff; border:0; border-radius:6px; padding:12px 22px; font:inherit; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .actions { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
+    .status { font-size:13px; }
+    .status.err { color:var(--err); }
+    .spinner { width:16px; height:16px; border:2px solid #fff; border-right-color:transparent; border-radius:50%; display:inline-block; animation:spin .8s linear infinite; vertical-align:-3px; margin-right:6px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .results h2 { color:var(--ok); }
+    .links { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:12px; }
+    .links a { color:var(--accent); font-weight:600; }
+    table.list { width:100%; border-collapse:collapse; font-size:13px; }
+    table.list th, table.list td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--border); }
+    table.list td.num, table.list th.num { text-align:right; }
+    .warn { background:#fffaeb; border:1px solid #fedf89; border-radius:6px; padding:10px 12px; margin-top:12px; font-size:13px; }
+    .warn ul { margin:6px 0 0; padding-left:18px; }
+    .hidden { display:none; }
+    .group-title { grid-column:1/-1; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); margin:10px 0 -4px; border-bottom:1px solid var(--border); padding-bottom:4px; }
+    .group-title:first-child { margin-top:0; }
+    .details { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px 16px; margin-top:8px; }
+    .detail-row { display:flex; align-items:center; gap:8px; }
+    .detail-row .num-label { width:22px; color:var(--muted); font-size:12px; text-align:right; flex:none; }
+    .detail-row input.col { flex:none; }
+    .detail-row input.dlabel { flex:1; min-width:0; }
+    fieldset { border:0; margin:0; padding:0; min-width:0; }
+    legend { font-weight:600; font-size:13px; margin-bottom:6px; padding:0; }
+    label.radio { font-weight:400; display:flex; align-items:center; gap:8px; margin:0 0 6px; cursor:pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Invoice PDF Generator</h1>
+  <p class="sub">Upload your invoice data, tell us which columns hold what, and get invoice PDFs in English or French in your Google Drive. Each job gets a Drive folder with the PDF and an editable spreadsheet, and we'll email you the link.</p>
+
+  <!-- Rebuild an existing job from its (edited) spreadsheet -->
+  <section class="card" id="rebuildCard">
+    <h2><span class="step">↻</span> Rebuild a PDF from an edited spreadsheet</h2>
+    <p class="help">Every job folder has an editable Google Sheet. Fix a typo, a price or a date there, then rebuild. The PDF is updated in place, so links you already shared keep working.</p>
+    <div class="grid" style="grid-template-columns:1fr">
+      <div>
+        <label for="rebuildSheet">Spreadsheet link</label>
+        <input type="text" id="rebuildSheet" placeholder="https://docs.google.com/spreadsheets/d/…">
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" id="rebuildNotify"> Email me the updated links</label>
+    <div class="actions" style="margin-top:16px">
+      <button id="rebuildBtn" type="button"><span id="rebuildLabel">Rebuild PDF</span></button>
+      <a href="#" id="showNewJob" class="hidden">Start a new submission instead</a>
+    </div>
+  </section>
+
+  <div id="newJob">
+
+  <!-- Step 1: Upload -->
+  <section class="card">
+    <h2><span class="step">1</span> Upload your data</h2>
+    <p class="help">CSV or Excel (.xlsx). Each row is one line item. Rows that share an invoice number become one invoice.</p>
+    <label class="drop" id="drop">
+      <input type="file" id="file" accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel">
+      <div><strong>Choose a file</strong> or drag it here</div>
+      <div class="filename" id="filename"></div>
+    </label>
+    <div id="previewArea" class="hidden">
+      <div class="preview-wrap"><table class="preview" id="preview"></table></div>
+      <p class="preview-note" id="previewNote"></p>
+    </div>
+  </section>
+
+  <!-- Step 2: Column mapping -->
+  <section class="card">
+    <h2><span class="step">2</span> Match your columns</h2>
+    <p class="help">Enter the column letter (A, B, … AA) for each field. Tip: click a box below, then click a column letter in the preview above.</p>
+    <form id="mappingForm" onsubmit="return false">
+      <div class="grid" id="mappingFields"></div>
+
+      <div class="group-title" style="margin-top:20px">Extra details <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">· optional, up to 10</span></div>
+      <p class="help" style="margin:8px 0 0">Each extra detail is printed as an indented line under its line item, e.g. <em>PO number: 4471</em> or <em>Location: Studio A</em>. Enter the column letter; the label defaults to that column's header.</p>
+      <div class="details" id="detailFields"></div>
+      <label class="check"><input type="checkbox" id="hasHeader" checked> The first row is a header row (skip it)</label>
+      <div class="grid" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(260px,320px))">
+      <div>
+        <label for="dateFormat">Dates in the file look like</label>
+        <select id="dateFormat">
+          <option value="auto">Detect automatically</option>
+          <option value="mdy">MM/DD/YYYY (11/03/2026 = Nov 3)</option>
+          <option value="dmy">DD/MM/YYYY (03/11/2026 = 3 Nov)</option>
+        </select>
+      </div>
+      <div>
+        <label for="numberFormat">Numbers in the file look like</label>
+        <select id="numberFormat">
+          <option value="auto">Detect automatically</option>
+          <option value="dot">1,234.56 (English)</option>
+          <option value="comma">1 234,56 (French)</option>
+        </select>
+      </div>
+      </div>
+    </form>
+  </section>
+
+  <!-- Step 3: Business details -->
+  <section class="card">
+    <h2><span class="step">3</span> Your business details</h2>
+    <p class="help">These show on every invoice. Your settings are saved for next time.</p>
+    <div class="grid">
+      <div><label for="companyName">Business name</label><input type="text" id="companyName"></div>
+      <div><label for="companyEmail">Business email</label><input type="email" id="companyEmail"></div>
+      <div><label for="currency">Currency symbol</label><input type="text" id="currency" value="$" maxlength="5"></div>
+      <div><label for="defaultTaxRate">Default tax rate (%)</label><input type="number" id="defaultTaxRate" min="0" step="0.01" placeholder="0"></div>
+      <div><label for="taxName">Tax name <span class="hint">· optional</span></label><input type="text" id="taxName" maxlength="40" placeholder="Tax / Taxes, GST, TPS + TVQ…"></div>
+      <div><label for="accentColor">Accent color</label><input type="color" id="accentColor" value="#1f4e79" style="height:38px;width:80px;padding:2px;border:1px solid var(--border);border-radius:6px"></div>
+    </div>
+    <div class="grid" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+      <div><label for="companyAddress">Business address</label><textarea id="companyAddress"></textarea></div>
+      <div><label for="footer">Footer / payment terms</label><textarea id="footer" placeholder="e.g. Payment due within 30 days. Thank you for your business!"></textarea></div>
+    </div>
+  </section>
+
+  <!-- Step 4: Output + delivery -->
+  <section class="card">
+    <h2><span class="step">4</span> Output and delivery</h2>
+    <p class="help">Choose the invoice language and format. When the PDFs are ready, a Google Drive link is emailed to the address below.</p>
+    <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
+      <fieldset>
+        <legend>Invoice language</legend>
+        <label class="radio"><input type="radio" name="language" value="en" checked> English</label>
+        <label class="radio"><input type="radio" name="language" value="fr"> Français</label>
+      </fieldset>
+      <fieldset>
+        <legend>Line items</legend>
+        <label class="radio"><input type="checkbox" id="combineEmployees"> Combine each employee's rows into one line item</label>
+        <p class="preview-note" style="margin-top:0">Adds up the hours and shows the date range from the earliest to the latest date. Different rates or roles stay on separate lines.</p>
+      </fieldset>
+      <fieldset>
+        <legend>PDF output</legend>
+        <label class="radio"><input type="radio" name="outputMode" value="separate"> One PDF per invoice (plus a ZIP)</label>
+        <label class="radio"><input type="radio" name="outputMode" value="combined" checked> A single PDF with all invoices</label>
+      </fieldset>
+      <div>
+        <label for="recipient">Email the link to <span class="req">*</span></label>
+        <input type="email" id="recipient" autocomplete="email" placeholder="you@example.com">
+        <p class="preview-note">Defaults to your Google account. If you enter someone else, they get view access to the Drive folder.</p>
+      </div>
+    </div>
+  </section>
+
+  <p class="help">The job folder will contain the PDF and an editable spreadsheet (Invoices + Settings tabs) for small corrections.</p>
+  <div class="actions">
+    <button id="generate"><span id="btnLabel">Generate invoice PDFs</span></button>
+    <span class="status" id="status"></span>
+  </div>
+
+  </div><!-- /newJob -->
+
+  <!-- Results -->
+  <section class="card results hidden" id="results" style="margin-top:16px"></section>
+</main>
+
+<script>
+  var REBUILD_ID = '<?= rebuildId ?>';   // set when opened from a "Rebuild PDF" link
+  var FIELDS = [];
+  var fileData = null;          // { name, base64 }
+  var lastFocused = null;       // column-letter input last focused
+  var MAX_DETAILS = 10;
+  var previewHeader = [];       // header row from the preview, for detail-label placeholders
+  var OPTION_IDS = ['dateFormat','numberFormat','companyName','companyEmail','companyAddress','currency','defaultTaxRate','taxName','accentColor','footer','recipient'];
+  var RADIO_NAMES = ['language','outputMode'];
+  var previewToken = 0;         // ignores late previews when the file is changed quickly
+  var busy = false;             // blocks double submissions from this tab
+
+  // ---------- Rebuild mode ----------
+  var rebuildCard = document.getElementById('rebuildCard');
+  var newJob = document.getElementById('newJob');
+  if (REBUILD_ID) {
+    // Opened from a rebuild link: show only the rebuild card, prefilled.
+    document.getElementById('rebuildSheet').value = 'https://docs.google.com/spreadsheets/d/' + REBUILD_ID + '/edit';
+    newJob.classList.add('hidden');
+    document.getElementById('showNewJob').classList.remove('hidden');
+  } else {
+    // Normal visit: the rebuild card goes below the new-submission form.
+    newJob.parentNode.insertBefore(rebuildCard, document.getElementById('results'));
+    rebuildCard.style.marginTop = '24px';
+  }
+  document.getElementById('showNewJob').addEventListener('click', function (e) {
+    e.preventDefault();
+    newJob.classList.remove('hidden');
+    this.classList.add('hidden');
+    newJob.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+
+  document.getElementById('rebuildBtn').addEventListener('click', function () {
+    if (busy) return;
+    var input = document.getElementById('rebuildSheet');
+    var link = input.value.trim();
+    var ok = /\/d\/[A-Za-z0-9_-]{20,}/.test(link) || /^[A-Za-z0-9_-]{20,}$/.test(link);
+    input.classList.toggle('invalid', !ok);
+    if (!ok) { showError('Please paste the link to the invoice spreadsheet.'); return; }
+    setBusy(true);
+    setStatus('Rebuilding the PDF from the spreadsheet…');
+    document.getElementById('results').classList.add('hidden');
+    google.script.run
+      .withSuccessHandler(function (res) { setBusy(false); setStatus(''); renderResults(res); })
+      .withFailureHandler(function (err) { setBusy(false); showError(err); })
+      .rebuildFromSpreadsheet({ sheet: link, notify: document.getElementById('rebuildNotify').checked });
+  });
+
+  document.getElementById('hasHeader').addEventListener('change', function () { updateDetailPlaceholders(); });
+
+  // ---------- Setup ----------
+  google.script.run
+    .withSuccessHandler(function (cfg) {
+      FIELDS = cfg.fields;
+      renderMappingFields();
+      if (cfg.saved) applySaved(cfg.saved);
+      var r = document.getElementById('recipient');
+      if (!r.value && cfg.userEmail) r.value = cfg.userEmail;
+    })
+    .withFailureHandler(showError)
+    .getConfig();
+
+  function renderMappingFields() {
+    var GROUP_TITLES = { Invoice: 'Invoice', Client: 'Client (bill to)', Work: 'Work / line items', Other: 'Other' };
+    var lastGroup = null;
+    var html = FIELDS.map(function (f) {
+      var title = f.group !== lastGroup ? '<div class="group-title">' + (GROUP_TITLES[f.group] || f.group) + '</div>' : '';
+      lastGroup = f.group;
+      return title + '<div><label for="map_' + f.key + '">' + f.label +
+        (f.required ? ' <span class="req">*</span>' : '') +
+        (f.hint ? ' <span class="hint">· ' + f.hint + '</span>' : '') +
+        '</label><input type="text" class="col" id="map_' + f.key + '" data-key="' + f.key +
+        '" maxlength="3" pattern="[A-Za-z]{1,3}" autocomplete="off" placeholder="' + (f.required ? 'A' : '–') + '"></div>';
+    }).join('');
+    document.getElementById('mappingFields').innerHTML = html;
+
+    var d = '';
+    for (var n = 0; n < MAX_DETAILS; n++) {
+      d += '<div class="detail-row"><span class="num-label">' + (n + 1) + '</span>' +
+        '<input type="text" class="col" id="dcol_' + n + '" data-detail="' + n + '" maxlength="3" autocomplete="off" placeholder="–" aria-label="Extra detail ' + (n + 1) + ' column">' +
+        '<input type="text" class="dlabel" id="dlabel_' + n + '" maxlength="60" placeholder="Label (optional)" aria-label="Extra detail ' + (n + 1) + ' label"></div>';
+    }
+    document.getElementById('detailFields').innerHTML = d;
+    document.querySelectorAll('input.col').forEach(function (inp) {
+      inp.addEventListener('focus', function () { lastFocused = inp; });
+      inp.addEventListener('input', function () {
+        inp.value = inp.value.replace(/[^a-z]/gi, '').toUpperCase();
+        inp.classList.remove('invalid');
+        highlightMapped();
+        updateDetailPlaceholders();
+      });
+    });
+  }
+
+  function applySaved(saved) {
+    var m = saved.mapping || {}, o = saved.options || {};
+    FIELDS.forEach(function (f) { if (m[f.key]) document.getElementById('map_' + f.key).value = m[f.key]; });
+    OPTION_IDS.forEach(function (id) { if (o[id] != null && o[id] !== '') document.getElementById(id).value = o[id]; });
+    if (o.hasHeader != null) document.getElementById('hasHeader').checked = !!o.hasHeader;
+    if (o.combineEmployees != null) document.getElementById('combineEmployees').checked = !!o.combineEmployees;
+    (m.details || []).forEach(function (det, n) {
+      if (n >= MAX_DETAILS || !det) return;
+      document.getElementById('dcol_' + n).value = det.col || '';
+      document.getElementById('dlabel_' + n).value = det.label || '';
+    });
+    RADIO_NAMES.forEach(function (name) {
+      var r = o[name] && document.querySelector('input[name="' + name + '"][value="' + o[name] + '"]');
+      if (r) r.checked = true;
+    });
+  }
+
+  // ---------- File handling ----------
+  var drop = document.getElementById('drop');
+  var fileInput = document.getElementById('file');
+  fileInput.addEventListener('change', function () { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+  ['dragenter','dragover'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
+  ['dragleave','drop'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
+  drop.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
+
+  function loadFile(file) {
+    if (busy) { showError('Please wait for the current job to finish.'); return; }
+    if (!/\.(csv|xlsx|xls)$/i.test(file.name)) { showError('Please choose a .csv or .xlsx file.'); return; }
+    if (file.size > 20 * 1024 * 1024) { showError('That file is over 20 MB. Please split it into smaller files.'); return; }
+    document.getElementById('filename').textContent = file.name;
+    setStatus('Reading file…');
+    var token = ++previewToken;
+    fileData = null;
+    var reader = new FileReader();
+    reader.onload = function () {
+      if (token !== previewToken) return;
+      fileData = { name: file.name, base64: String(reader.result).split(',')[1] };
+      google.script.run
+        .withSuccessHandler(function (p) { if (token === previewToken) { renderPreview(p); setStatus(''); } })
+        .withFailureHandler(function (err) { if (token === previewToken) showError(err); })
+        .previewFile(fileData);
+    };
+    reader.onerror = function () { showError('Could not read that file.'); };
+    reader.readAsDataURL(file);
+  }
+
+  function updateDetailPlaceholders() {
+    var useHeader = document.getElementById('hasHeader').checked;
+    for (var n = 0; n < MAX_DETAILS; n++) {
+      var col = document.getElementById('dcol_' + n).value;
+      var idx = col ? colIndex(col) : -1;
+      var head = useHeader && idx >= 0 && previewHeader[idx] ? previewHeader[idx] : '';
+      document.getElementById('dlabel_' + n).placeholder = head || 'Label (optional)';
+    }
+  }
+  function colIndex(letters) {
+    var x = 0;
+    for (var i = 0; i < letters.length; i++) x = x * 26 + (letters.charCodeAt(i) - 64);
+    return x - 1;
+  }
+
+  function renderPreview(p) {
+    previewHeader = p.rows[0] || [];
+    var t = document.getElementById('preview');
+    var head = '<tr><th style="cursor:default"></th>' + p.columns.map(function (c) {
+      return '<th data-col="' + c + '" title="Click to assign column ' + c + '">' + c + '</th>';
+    }).join('') + '</tr>';
+    var body = p.rows.map(function (r, i) {
+      return '<tr class="' + (i === 0 ? 'header' : '') + '"><td class="rownum">' + (i + 1) + '</td>' +
+        r.map(function (v) { return '<td title="' + esc(v) + '">' + esc(v) + '</td>'; }).join('') + '</tr>';
+    }).join('');
+    t.innerHTML = head + body;
+    t.querySelectorAll('th[data-col]').forEach(function (th) {
+      th.addEventListener('click', function () {
+        if (!lastFocused) { lastFocused = document.querySelector('input.col'); }
+        lastFocused.value = th.dataset.col;
+        lastFocused.classList.remove('invalid');
+        highlightMapped();
+        updateDetailPlaceholders();
+        // Advance to the next empty letter box for fast mapping
+        var inputs = Array.prototype.slice.call(document.querySelectorAll('input.col'));
+        var next = inputs.slice(inputs.indexOf(lastFocused) + 1).find(function (i) { return !i.value; });
+        if (next) next.focus(); else lastFocused.focus();
+      });
+    });
+    document.getElementById('previewNote').textContent =
+      'Showing ' + p.rows.length + ' of ' + p.totalRows + ' rows' +
+      (p.columns.length >= 26 ? ' (first 26 columns)' : '') + '.';
+    document.getElementById('previewArea').classList.remove('hidden');
+    highlightMapped();
+    updateDetailPlaceholders();
+  }
+
+  function highlightMapped() {
+    var used = {};
+    document.querySelectorAll('input.col').forEach(function (i) { if (i.value) used[i.value] = true; });
+    document.querySelectorAll('#preview th[data-col]').forEach(function (th) {
+      th.classList.toggle('mapped', !!used[th.dataset.col]);
+    });
+  }
+
+  // ---------- Generate ----------
+  document.getElementById('generate').addEventListener('click', function () {
+    if (busy) return;
+    if (!fileData) { showError('Please upload a CSV or XLSX file first.'); return; }
+
+    var mapping = {}, problems = [];
+    FIELDS.forEach(function (f) {
+      var inp = document.getElementById('map_' + f.key);
+      var v = inp.value.trim().toUpperCase();
+      var bad = (f.required && !v) || (v && !/^[A-Z]{1,3}$/.test(v));
+      inp.classList.toggle('invalid', bad);
+      if (bad) problems.push(f.label);
+      mapping[f.key] = v;
+    });
+    if (problems.length) { showError('Please enter a column letter for: ' + problems.join(', ')); return; }
+    if (!mapping.employeeName && !mapping.description) {
+      document.getElementById('map_employeeName').classList.add('invalid');
+      showError('Please enter a column for Employee name or Role / description (or both).');
+      return;
+    }
+    mapping.details = [];
+    for (var n = 0; n < MAX_DETAILS; n++) {
+      var dc = document.getElementById('dcol_' + n);
+      var col = dc.value.trim().toUpperCase();
+      var badCol = col && !/^[A-Z]{1,3}$/.test(col);
+      dc.classList.toggle('invalid', !!badCol);
+      if (badCol) { showError('Extra detail ' + (n + 1) + ': "' + col + '" is not a column letter.'); return; }
+      mapping.details.push({ col: col, label: document.getElementById('dlabel_' + n).value.trim() });
+    }
+
+    var options = {
+      hasHeader: document.getElementById('hasHeader').checked,
+      combineEmployees: document.getElementById('combineEmployees').checked
+    };
+    OPTION_IDS.forEach(function (id) { options[id] = document.getElementById(id).value; });
+    RADIO_NAMES.forEach(function (name) {
+      options[name] = document.querySelector('input[name="' + name + '"]:checked').value;
+    });
+    var rcp = document.getElementById('recipient');
+    var emailOk = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(rcp.value.trim());
+    rcp.classList.toggle('invalid', !emailOk);
+    if (!emailOk) { showError('Please enter a valid email address for the link.'); return; }
+
+    // Snapshot this submission. Changing the form afterwards won't affect it.
+    var request = JSON.parse(JSON.stringify({ file: fileData, mapping: mapping, options: options }));
+
+    setBusy(true);
+    setStatus('Creating the spreadsheet and PDFs… this can take about a second per invoice.');
+    document.getElementById('results').classList.add('hidden');
+
+    google.script.run
+      .withSuccessHandler(function (res) { setBusy(false); setStatus(''); renderResults(res); })
+      .withFailureHandler(function (err) { setBusy(false); showError(err); })
+      .generateInvoices(request);
+  });
+
+  function renderResults(res) {
+    var el = document.getElementById('results');
+    var rows = res.invoices.map(function (inv) {
+      return '<tr><td>' + esc(inv.number) + '</td><td>' + esc(inv.customer) + '</td><td class="num">' +
+        esc(inv.total) + '</td><td><a href="' + inv.url + '" target="_blank" rel="noopener">Open PDF</a></td></tr>';
+    }).join('');
+    var warnings = (res.warnings || []).length
+      ? '<div class="warn">' + res.warnings.map(esc).join('<br>') + '</div>' : '';
+    var skipped = res.skipped.length
+      ? '<div class="warn"><strong>' + res.skipped.length + ' row(s) skipped:</strong><ul>' +
+        res.skipped.slice(0, 20).map(function (s) { return '<li>Row ' + esc(s.row) + ': ' + esc(s.reason) + '</li>'; }).join('') +
+        (res.skipped.length > 20 ? '<li>…and ' + (res.skipped.length - 20) + ' more</li>' : '') + '</ul></div>'
+      : '';
+    el.innerHTML =
+      '<h2>✓ ' + (res.rebuilt ? 'Rebuilt ' : 'Created ') + res.invoices.length + ' invoice' + (res.invoices.length === 1 ? '' : 's') + '</h2>' +
+      '<p class="help">Saved to Drive folder <strong>' + esc(res.folderName) + '</strong>.' +
+        (res.emailedTo ? ' A link was emailed to <strong>' + esc(res.emailedTo) + '</strong>.' : '') +
+        ' Reference: ' + esc(res.jobId) + '</p>' +
+      '<div class="links">' +
+      (res.combinedUrl ? '<a href="' + res.combinedUrl + '" target="_blank" rel="noopener">Open PDF</a>' : '') +
+      '<a href="' + res.sheetUrl + '" target="_blank" rel="noopener">Edit spreadsheet</a>' +
+      '<a href="' + res.folderUrl + '" target="_blank" rel="noopener">Open Drive folder</a>' +
+      (res.zipUrl ? '<a href="' + res.zipUrl + '" target="_blank" rel="noopener">Download all (ZIP)</a>' : '') + '</div>' +
+      '<table class="list"><tr><th>Invoice #</th><th>Customer</th><th class="num">Total</th><th></th></tr>' + rows + '</table>' +
+      '<p class="help" style="margin-top:12px">Need a small change? Edit the spreadsheet, then ' +
+        (res.rebuildUrl ? '<a href="' + res.rebuildUrl + '" target="_blank" rel="noopener">rebuild the PDF</a>.'
+                        : 'paste its link into the “Rebuild” box on this page.') + '</p>' +
+      warnings + skipped;
+    el.classList.remove('hidden');
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  // ---------- UI helpers ----------
+  function setBusy(on) {
+    busy = on;
+    var b = document.getElementById('generate');
+    b.disabled = on;
+    document.getElementById('rebuildBtn').disabled = on;
+    fileInput.disabled = on;
+    document.getElementById('btnLabel').innerHTML = on ? '<span class="spinner"></span>Generating…' : 'Generate invoice PDFs';
+  }
+  function setStatus(msg) { var s = document.getElementById('status'); s.className = 'status'; s.textContent = msg; }
+  function showError(err) {
+    var s = document.getElementById('status');
+    s.className = 'status err';
+    s.textContent = (err && err.message) ? err.message : String(err);
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+</script>
+</body>
+</html>
