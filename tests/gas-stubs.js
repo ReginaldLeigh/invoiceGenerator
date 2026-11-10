@@ -61,6 +61,9 @@ const world = {
   folders: {},         // id → folder
   sheets: {},          // spreadsheet id → fake spreadsheet
   emails: [],
+  logs: [],            // { level, entry } from console.log/warn/error (JSON lines parsed)
+  caches: {},          // email → { key: value } (CacheService.getUserCache)
+  failCreateFile: null // set to a message to make folder.createFile throw (simulated Drive failure)
 };
 
 function propStore(data) {
@@ -98,7 +101,7 @@ function makeFolder(name, parent) {
     getUrl: () => 'https://drive.google.com/drive/folders/' + id,
     isTrashed: () => folder.trashed,
     setTrashed: t => { folder.trashed = !!t; return folder; },
-    createFile: blob => makeFile(blob, folder),
+    createFile: blob => { if (world.failCreateFile) throw new Error(world.failCreateFile); return makeFile(blob, folder); },
     createFolder: n => makeFolder(n, folder),
     addViewer: e => { folder.viewers.push(e); return folder; },
     files: () => Object.values(world.files).filter(f => f.parent === folder),
@@ -203,8 +206,18 @@ function validationBuilder() {
 function loadCode(opts) {
   const state = { email: (opts && opts.email) || 'tester@example.com' };
   let rootFolder = null;
+  const capture = level => line => {
+    let entry; try { entry = JSON.parse(line); } catch (e) { entry = { raw: String(line) }; }
+    world.logs.push({ level: level, entry: entry });
+  };
   const ctx = {
-    console,
+    console: { log: capture('info'), warn: capture('warn'), error: capture('error') },
+    CacheService: {
+      getUserCache: () => {
+        const c = world.caches[state.email] = world.caches[state.email] || {};
+        return { get: k => (k in c ? c[k] : null), put: (k, v) => { c[k] = String(v); }, remove: k => { delete c[k]; } };
+      },
+    },
     Utilities: {
       base64Decode: s => Array.from(Buffer.from(s, 'base64')),
       base64Encode: bytes => Buffer.from(bytes).toString('base64'),

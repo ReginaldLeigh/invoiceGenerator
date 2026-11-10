@@ -6,12 +6,12 @@ A web app that turns a database export (CSV or Excel, one record per row) into C
 - **an editable Google Sheet** of the same invoices, so small fixes can be made and the PDF rebuilt **without re-submitting the file**;
 - **an untouched copy of the uploaded file** (`Original data - <file name>`), for later checking.
 
-A link is emailed to the person who submitted the form.
+A link is emailed (in English) to the person who submitted the form.
 
 ## How it works
 
 1. **Presets (optional).** Pick a saved preset to fill in the whole form. Your *default* preset fills it in as soon as the page opens, so for a fixed export format the routine is: **open the page → upload the file → Generate**.
-2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows with column letters. Rows hidden in Excel (by a filter or by hand) are left out.
+2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows with column letters. With **Pin preview** on (the default on computers, off on phones; your choice is remembered), the preview stays at the top of the screen while you fill in the rest of the form. Rows hidden in Excel (by a filter or by hand) are left out.
 3. **Match columns.** Type a column letter for each field, or click a box and then a column letter in the preview. ✱ = required.
    - **Invoice:** Invoice number ✱, Client number, Invoice date, Payment due date
    - **Client (bill to):** Client name ✱, Attention (ATTN), Address 1, Address 2, Address 3, Address 4, City, State / Province, Postal code, Country
@@ -23,13 +23,17 @@ A link is emailed to the person who submitted the form.
 4. **Output and delivery.**
    - **Language:** English or Français. Every word on the invoice follows this choice.
    - **Combine each candidate's rows into one line item:** adds up the units and shows the date range (`11/03/2026 – 11/05/2026`). Rows with a different line type, rate, work order, purchase order or group stay separate.
-   - **PDF output:** a single PDF with every invoice (default), or one PDF per invoice plus a ZIP.
+   - **PDF output:** one PDF per invoice plus a ZIP (default), or a single PDF with every invoice.
    - **Delivery:** always the signed-in Google account. There's no recipient box, and nothing is shared with anyone else.
-5. **Generate.** Files go to `My Drive / Invoice PDFs / <timestamp> - <file name> (<job id>)/`. The results page and the email (in the invoice language) link to the PDF, the spreadsheet, the folder, the original data file and the rebuild page. Skipped rows and notes are listed on the results page.
+5. **Generate.** Files go to `My Drive / Invoice PDFs / <timestamp> - <file name> (<job id>)/`. The results page and the email link to the PDF(s), the spreadsheet, the folder, the original data file and the rebuild page. Skipped rows and notes are listed on the results page.
+
+### Emails
+- **Always in English**, whatever the invoice language.
+- Sent from the signed-in user's own Google account, shown as **"Invoice PDF Generator (no reply)"** (`EMAIL_SENDER_NAME` in `Config.gs`), with "This is an automated message. Please don't reply." at the end. Apps Script can only send from the account running the app, so a separate no-reply address isn't possible. There is no Reply-To, so any reply goes to the user who generated the invoices.
 
 ## The invoice
 
-Portrait (Letter). Every page shows "Page X of Y" at the bottom (French: "Page X de Y"), restarting for each invoice.
+Portrait (Letter). Every page shows "Page X of Y" in the **top-right corner** (French: "Page X de Y"), restarting for each invoice.
 
 - **Page 1 header:**
   - Logo top-left, with Invoice #, Client #, Invoice Date and Payment Due Date top-right.
@@ -39,8 +43,10 @@ Portrait (Letter). Every page shows "Page X of Y" at the bottom (French: "Page X
 - **Later pages:** a condensed header (small logo, the four invoice fields, client name).
 - **Body:** Candidate | Work Order | Purchase Order | Period | Type | Unit(s) | Rate | Amount (French: Candidat | Référence | Bon de commande | Période | Type | Unité(s) | Taux | Montant). The column headings repeat on every page. Group headings are tinted in the accent colour and repeat with "(continued)" / "(suite)" when a group runs onto the next page.
 - **Last page only:**
-  - The **units summary** (units per line type) on the left; Subtotal, the tax line(s) and **Total (CAD)** on the right.
-  - Then the **invoice footer**: EFT payment details and the bank address, the bank ID / transit / account, the remittance line and the disclosure.
+  - The **units summary** (units per line type, plus a **Total**) on the left; Subtotal, the tax line(s) and **Total (CAD)** on the right.
+  - The **invoice footer**: EFT payment details and the bank address, the bank ID / transit / account, the remittance line and the disclosure. It sits **at the bottom of the last page** (`FOOTER_AT_PAGE_BOTTOM` in `Config.gs`; set it to `false` to have it follow straight after the totals instead).
+- **Spacing:** at least 24pt between the header and the body, 28pt between the body and the summary, and 30pt between the summary and the footer.
+- **Long text** (names, codes, addresses, extra details) wraps inside its column; very long words get invisible break points so they never overflow.
 - **Formats:** dates print as **MM/DD/YYYY** and numbers in English style (`$1,234.50`, `24.5`, `9.975%`) on both languages.
 
 ### Tax codes
@@ -120,6 +126,28 @@ The job folder contains `Invoices - <file> (editable)` (`Factures - <file> (modi
 - Each submission gets a unique job ID and its own folder, spreadsheet and PDFs, so simultaneous jobs never mix.
 - The only shared data is the tax rates (admin-only writes, under a lock) and the root-folder creation (under a lock).
 - Rebuilds of the same spreadsheet can't overlap; the second is refused with "try again in a minute".
+- Logging, error emails and run metrics keep nothing between calls; the error-email limit is per user.
+
+## Logs, errors and run metrics
+
+Every call from the page is a **run** with its own **run id** (for Generate, the run id is the job reference shown in the folder name, the results page and the email). Each run writes one JSON line per step with `app`, `runId`, `user`, `timestamp`, `function` and `stage`:
+
+- **Who's using the app:** `page_open` each time someone opens the page.
+- **Generate:** `start` → `request` (file name and size, language, output) → `file_read` (rows, hidden rows) → `parsed` (invoices, skipped, notes) → `folder_created` → `original_saved` → `sheet_created` → `pdfs_written` (count, ms) → `email_sent` → `run_metrics` → `done` (ms).
+- **Rebuild:** `start` → `opened` → `claimed` → `pdfs_written` → `done`. Presets, previews and tax-rate changes log `start` and `done`.
+- **Errors:**
+  - **User mistakes** (a missing column, a bad link, not an admin) are logged as `user_error` warnings and shown to the user as before.
+  - **Unexpected errors** (Drive or PDF failures, bugs) are logged as `error` with the stack, and **emailed to `DEV_EMAIL`** (reggie.leigh@gmail.com). The email has the run id, user, time, function, the last stage reached and the file name and size, never the file's contents. The same error from the same user is emailed at most once per 10 minutes. The user sees "Something went wrong (reference …). The developer has been notified." with the details.
+  - Error emails are sent from the user's account, so they count toward that user's daily email quota.
+- **Where to read logs:** Apps Script editor → **Executions** (open a run to see its log lines), or Cloud Logging. Search for a run id to follow one job. If you can't see other users' runs there, link the script to a standard Google Cloud project (Project Settings → Google Cloud Platform project) and use Logs Explorer.
+
+**Run metrics (for BigQuery).** After each **Generate** (not Rebuild) the app builds one row per client:
+
+```
+[runId, user, clientId, invoiceCount, runTimeMs]
+```
+
+`clientId` is the Client # (blank → `''`), `invoiceCount` is that client's invoices in the run, and `runTimeMs` is the whole run in milliseconds. There's no timestamp, because your library adds it. The rows are written to the logs (`stage: "run_metrics"`) and passed to `sendRunMetrics_(rows)` at the bottom of `Config.gs`; see Developer setup → **Run metrics**. A failure there is logged and never fails the run.
 
 ## Setup
 
@@ -144,10 +172,12 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 
 - ABC Store, 123 Front Street, Orlando, FL 30029, phone 725-555-6458;
 - placeholder registration numbers;
-- the JP Morgan Trust bank details and the FrontStreet disclosure;
-- accent colour dark blue `#1f4e79`;
-- page numbers at the bottom;
+- the JP Morgan Trust bank details and the FrontStreet remittance line and disclosure;
+- accent colour dark blue `#1f4e79`, footer at the bottom of the last page;
+- sender name "Invoice PDF Generator (no reply)" and `DEV_EMAIL` reggie.leigh@gmail.com;
 - no logo and no tax admins.
+
+**English and French invoices use the same company and bank details**; only the labels change (e.g. "Bank ID" / "N° d'institution"). The remittance line and the disclosure are sentences, so they have an English and a French version.
 
 ### Add the logo (needs a Google Drive file)
 1. Prepare a PNG. Wide, transparent-background logos look best; about 600 px wide and under 1 MB is plenty.
@@ -165,10 +195,10 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 - If the logo can't be read (wrong ID, not shared, not a PNG, over 2 MB), invoices are still generated without it, and the results page says what to check.
 
 ### Replace the stand-in company details (no Drive item needed)
-1. In **Config.gs**, under `COMPANY.en`, replace the stand-ins:
+1. In **Config.gs**, under `COMPANY`, replace the stand-ins (used on both languages):
    - `address`: one line per entry; the first line prints as the business name, in bold and in the accent colour.
    - `phone`: the number only; "T. " is added in front automatically.
-2. Do the same under `COMPANY.fr`. Anything left blank there uses the English value.
+2. *(Nothing to do for French: the same company details are used.)*
 3. Under `GOVERNMENT_NUMBERS`, replace the placeholders. Each is entered once and used on both versions:
    - `gstHst`: the GST/HST registration number. It prints as "HST/GST #" in English and "TVH/TPS #" in French.
    - `qst`: the QST registration number. It prints as "QST #" in English and "TVQ #" in French.
@@ -177,12 +207,8 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 4. Publish a new version (step 6 above).
 
 ### Replace the stand-in footer (no Drive item needed)
-1. In **Config.gs**, under `FOOTER.en`, edit:
-   - `paymentTitle`;
-   - `bankAddress`: one line per entry;
-   - `bankDetails`: label and value pairs, shown on the right in this order. Add or remove pairs as needed;
-   - `remittance` and `disclosure`.
-2. Do the same under `FOOTER.fr` in French. Anything left blank there uses the English value.
+1. In **Config.gs**, under `BANK` (used on both languages), edit `address` (one line per entry), `bankId`, `transit` and `account`. The labels ("EFT Payment", "Bank ID", "Bank Transit", "Account #" and their French versions) are added automatically; a value left blank hides its line.
+2. Under `FOOTER_TEXT.en` and `FOOTER_TEXT.fr`, edit the `remittance` line and the `disclosure` paragraph. A French value left blank uses the English one.
 3. Publish a new version (step 6 above).
 
 ### Add tax admins (no Drive item needed)
@@ -190,9 +216,17 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 - **Option B, no redeploy:** in the Apps Script editor go to **Project Settings (⚙️) → Script properties → Add script property**, set Property `TAX_ADMINS` and Value `ana@company.com, ben@company.com`, then **Save**. This takes effect the next time the admin opens or reloads the web app.
 - Admins see editable inputs on the **Tax rates** card; everyone else sees the rates read-only. To remove an admin, delete their email from the list.
 
+### Run metrics (BigQuery)
+At the bottom of **Config.gs**, `sendRunMetrics_(rows)` receives `[[runId, user, clientId, invoiceCount, runTimeMs], ...]` after every Generate. To send the rows with your existing BigQuery library:
+1. In the Apps Script editor, **Libraries (+)**, add your library by its script ID and note its identifier (e.g. `MyBqLib`).
+2. In `sendRunMetrics_`, replace the marked comment with the library call, e.g. `MyBqLib.send(rows);`.
+3. Publish a new version (step 6 above). Errors inside `sendRunMetrics_` are logged and never stop a run.
+
 ### Other settings
 - `ACCENT_COLOR`: the colour of headings, the column-heading bar, group headings, spreadsheet headers and email buttons.
-- `PAGE_NUMBER_POSITION`: `'bottom'` (default) or `'top'`. Switch to `'top'` only if page numbers don't land at the bottom of the page in real PDFs. If page breaks come out wrong, the page-size estimates are the `PAGE` constants near the top of `Code.gs`.
+- `FOOTER_AT_PAGE_BOTTOM`: `true` (default) puts the footer at the bottom of the last page; `false` puts it right after the totals. If Google's PDFs don't show it at the bottom, set `false`.
+- `EMAIL_SENDER_NAME`: the sender name on all emails. `DEV_EMAIL`: where unexpected errors are emailed (blank turns error emails off).
+- If page breaks come out wrong in real PDFs, the page-size estimates are the `PAGE` constants near the top of `Code.gs`.
 
 ### Notes
 - Existing invoices aren't changed by any of these settings. Only jobs generated (or rebuilt) afterwards show the new logo and details. Tax rate changes apply only to newly generated jobs.
@@ -200,7 +234,7 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 
 ## Sample files
 
-All seven samples are single-line database-style records sharing **one column layout**, so one preset maps them all:
+Samples 1–7 and 10 are single-line database-style records sharing **one column layout** ("layout A"), so one preset maps them all:
 
 | A | B | C | D | E | F | G–J | K | L | M | N | O | P | Q | R | S | T | U | V | W | X | Y |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -213,12 +247,19 @@ All seven samples are single-line database-style records sharing **one column la
 5. `sample-5-edge-cases.csv`: units `8 hrs`, blank units, rate `n/a`, blank rate, a blank line type, an unreadable date, a blank Candidate / Role, a missing invoice number and a credit line.
 6. `sample-6-long.csv`: one invoice with 70 rows in four projects, to check page breaks, the condensed header and page numbers.
 7. `sample-7-hidden-rows.xlsx`: an Excel file with two rows hidden by a filter and one hidden by hand. Only the four visible rows should be invoiced.
+10. `sample-10-long-strings.csv`: very long names, unbroken codes, long addresses and project names, and amounts in the millions, to check wrapping.
+
+**Different column layouts (to practise presets).** Samples 8 and 9 hold the same records as samples 1 and 3, in other column orders, so each needs its own preset. With the layout A preset, uploading them shows the "columns don't match" warning.
+
+- `sample-8-layout-b.csv` (layout B, unused `Notes` and `Internal ID` columns mixed in): Client **A**, ATTN **B**, Address 1–3 **C–E**, Invoice # **F**, Address 4 **G**, City **H**, Province **I**, Postal **J**, Country **K**, Client # **L**, Invoice date **N**, Due date **O**, Candidate **P**, Rate **Q**, Units **R**, Line type **S**, Work order **T**, PO **U**, Work date **V**, Tax code **X**, Group by **Y** (Project), extra details **Z** (Location) and **AA** (Shift).
+- `sample-9-layout-c.csv` (layout C, French headers, `;`, decimal commas, DD/MM dates): Invoice # **A**, Invoice date **B**, Due date **C**, Client # **D**, Line type **E**, Client **F**, Candidate **G**, Units **H**, Rate **I**, Tax code **J**, ATTN **K**, Address 1–4 **L–O**, City **P**, Province **Q**, Postal **R**, Country **S**, Work order **T**, PO **U**, Work date **V**, Group by **W** (Projet), extra details **X** (Lieu) and **Y** (Quart).
 
 ## Testing
 
 `node tests/run.js` (Node 18+, no packages to install) runs `Code.gs` and `Config.gs` against in-memory stand-ins for Drive, Sheets, Gmail and properties (`tests/gas-stubs.js`). Whole jobs run end to end: upload → spreadsheet → PDF HTML → email → edit → rebuild. It covers:
 
-- all seven samples;
+- all ten samples, including identical results from layouts A, B and C;
+- English-only emails, defaults, logs for every stage, error emails (and their 10-minute limit), run metrics, and two users at once;
 - every tax code in both languages, rates and admins;
 - grouping, the units summary and the address block;
 - pagination, presets and branding fallbacks;
@@ -226,7 +267,7 @@ All seven samples are single-line database-style records sharing **one column la
 
 `node tests/run.js --html` also writes each sample's invoice HTML to `tests/out/` to open in a browser.
 
-Google's HTML-to-PDF rendering itself can only be checked in a real deployment. After deploying, generate each sample and check that page breaks fall between rows and that "Page X of Y" sits at the bottom of each page.
+Google's HTML-to-PDF rendering itself can only be checked in a real deployment. After deploying, generate each sample and check that page breaks fall between rows, that "Page X of Y" is in the top-right corner, and that the footer sits at the bottom of the last page (if not, set `FOOTER_AT_PAGE_BOTTOM: false`).
 
 ## Limits
 - Apps Script stops a run after **6 minutes**. Each PDF takes about a second, so one run handles roughly 250–300 invoices. Split larger files.

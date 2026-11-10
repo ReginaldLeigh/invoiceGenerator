@@ -81,6 +81,12 @@
     .note-box ul { margin:6px 0 0; padding-left:18px; }
     #taxTable input { width:90px; text-align:right; }
     #taxTable td.fr { color:var(--muted); }
+    .dock { position:sticky; top:0; z-index:20; background:var(--bg); padding:8px 0 10px; margin:-4px 0 12px; }
+    .dock.unpinned { position:static; }
+    .dock .dock-bar { display:flex; align-items:center; gap:12px; flex-wrap:wrap; font-size:13px; }
+    .dock .preview-wrap { max-height:180px; overflow:auto; margin-top:6px; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,.06); }
+    .dock .preview th { position:sticky; top:0; z-index:1; }
+    @media (max-width:700px) { .dock .preview-wrap { max-height:120px; } }
     .match { background:#ecfdf3; border:1px solid #abefc6; border-radius:6px; padding:8px 12px; margin-top:12px; font-size:13px; color:var(--ok); }
   </style>
 </head>
@@ -140,11 +146,20 @@
       <div class="filename" id="filename"></div>
     </label>
     <div id="previewArea" class="hidden">
-      <div class="preview-wrap"><table class="preview" id="preview"></table></div>
       <p class="preview-note" id="previewNote"></p>
       <div id="headerCheck" class="hidden"></div>
     </div>
   </section>
+
+  <!-- File preview: docked above the mapping step; pinned, it stays on screen while you fill in the form -->
+  <div id="previewDock" class="dock hidden" aria-label="File preview">
+    <div class="dock-bar">
+      <strong>File preview</strong>
+      <span class="preview-note" id="dockNote" style="margin:0">Click a column letter to fill the box you're in.</span>
+      <label class="check" style="margin:0 0 0 auto"><input type="checkbox" id="pinPreview"> Pin preview</label>
+    </div>
+    <div class="preview-wrap"><table class="preview" id="preview"></table></div>
+  </div>
 
   <!-- Step 2: Column mapping -->
   <section class="card">
@@ -206,8 +221,8 @@
       </fieldset>
       <fieldset>
         <legend>PDF output</legend>
-        <label class="radio"><input type="radio" name="outputMode" value="separate"> One PDF per invoice (plus a ZIP)</label>
-        <label class="radio"><input type="radio" name="outputMode" value="combined" checked> A single PDF with all invoices</label>
+        <label class="radio"><input type="radio" name="outputMode" value="separate" checked> One PDF per invoice (plus a ZIP)</label>
+        <label class="radio"><input type="radio" name="outputMode" value="combined"> A single PDF with all invoices</label>
       </fieldset>
       <div>
         <legend style="font-weight:600;font-size:13px;margin-bottom:6px">Delivery</legend>
@@ -591,7 +606,7 @@
   newJob.addEventListener('change', markDirty);
   function markDirty(e) {
     if (!activePreset || presetDirty) return;
-    if (e.target.closest('#presetCard') || e.target.id === 'file') return;
+    if (e.target.closest('#presetCard') || e.target.id === 'file' || e.target.id === 'pinPreview') return;
     presetDirty = true;
     setStatus('You changed the form after choosing “' + activePreset.name + '”. Click Update preset to keep these changes for next time.', 'presetStatus');
   }
@@ -714,6 +729,7 @@
       'Showing ' + p.rows.length + ' of ' + p.totalRows + ' rows' +
       (p.columns.length >= 26 ? ' (first 26 columns)' : '') + '.';
     document.getElementById('previewArea').classList.remove('hidden');
+    document.getElementById('previewDock').classList.remove('hidden');
     highlightMapped();
     updateDetailPlaceholders();
     checkHeaders();
@@ -804,6 +820,23 @@
     el.classList.remove('hidden');
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
+
+  // ---------- Pinned preview ----------
+  // Pinned by default on wide screens, not on phones; the choice is remembered in this browser.
+  (function () {
+    var KEY = 'invoicePdf.pinPreview';
+    var box = document.getElementById('pinPreview');
+    var dock = document.getElementById('previewDock');
+    var saved = null;
+    try { saved = window.localStorage.getItem(KEY); } catch (e) { saved = null; }
+    box.checked = saved == null ? window.innerWidth > 700 : saved === '1';
+    var apply = function () { dock.classList.toggle('unpinned', !box.checked); };
+    apply();
+    box.addEventListener('change', function () {
+      apply();
+      try { window.localStorage.setItem(KEY, box.checked ? '1' : '0'); } catch (e) { /* not remembered */ }
+    });
+  })();
 
   // ---------- Tax rates ----------
   var taxState = null;

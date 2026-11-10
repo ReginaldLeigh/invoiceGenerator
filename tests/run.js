@@ -40,17 +40,19 @@ function parse(file, mapping, options) {
   return gas.parseUpload_({ file: fileArg(file), mapping: mapping || MAP, options: Object.assign({}, OPTS, options) }, 'test');
 }
 const inv = (res, n) => res.grouped.invoices.filter(i => i.number === n)[0];
-const html = (res, n, opts) => {
+/** Invoice HTML; break points (<wbr>) are removed so text can be searched as printed. rawHtml keeps them. */
+const rawHtml = (res, n) => {
   const L = I18N[res.opts.language];
   return gas.invoicesHtml_(n ? [inv(res, n)] : res.grouped.invoices, res.opts, L, gas.loadBranding_(res.opts.language));
 };
+const html = (res, n) => rawHtml(res, n).replace(/<wbr>/g, '');
 function generate(file, mapping, options) {
   world.emails.length = 0;
   return gas.generateInvoices({ file: fileArg(file), mapping: mapping || MAP, options: Object.assign({}, OPTS, options) });
 }
 function folderOf(res) { return Object.values(world.folders).filter(f => f.getUrl() === res.folderUrl)[0]; }
 function pdfHtml(res) {
-  return folderOf(res).files().filter(f => !f.trashed && /\.pdf$/.test(f.getName())).map(f => f.blob.getDataAsString());
+  return folderOf(res).files().filter(f => !f.trashed && /\.pdf$/.test(f.getName())).map(f => f.blob.getDataAsString().replace(/<wbr>/g, ''));
 }
 
 console.log('Sample 1 — basic English (ONHST)');
@@ -127,8 +129,9 @@ test('French PDF HTML: French labels, English-style numbers, Permis QC, French f
    'PRIVÉ ET CONFIDENTIEL', 'Candidat', 'Référence', 'Bon de commande', 'Période', 'Unité(s)', 'Taux', 'Montant',
    'ATTN: Comptes fournisseurs', 'Sommaire des unités', 'Sous-total', 'TPS (5%)', 'TVQ (9.975%)', '$77.80', '$155.21',
    'Total (CAD)', '$1,789.01', '$1,050.00', 'T. 725-555-6458', 'TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001',
-   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution:', '1234, rue Alexander', 'Page 1 de 1'].forEach(s => has(h, s));
-  ['PRIVATE', 'HST/GST', 'Invoice Date', '1 050,00', '9,975'].forEach(s => hasNot(h, s));
+   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution:', 'N° de transit:', 'N° de compte:',
+   '1234 Alexander Street', 'Saint-Laurent QC H4R 1Y8', 'ABC Store', 'Page 1 de 1'].forEach(s => has(h, s));
+  ['PRIVATE', 'HST/GST', 'Invoice Date', '1 050,00', '9,975', 'rue Alexander', 'Bank ID'].forEach(s => hasNot(h, s));
 });
 
 console.log('Sample 3 — grouping by Project Number');
@@ -207,7 +210,7 @@ test('invalid or blank Units/Rate → 0 with notes; blank invoice number skipped
   const h = html(res, 'E-501');
   has(h, 'next Tuesday', 'unreadable date printed as written');
   has(h, '-$25.00');
-  has(h, 'Payment Due Date</td><td class="val"></td>', 'blank due date keeps the label');
+  has(h, 'Payment Due Date</td><td class="val" style="max-width:150pt"></td>', 'blank due date keeps the label');
 });
 
 console.log('Sample 6 — long invoice and pagination');
@@ -238,7 +241,7 @@ test('splits into pages: full header first, condensed after, tail only on the la
   const P = gas.T.PAGE;
   pages.forEach((rows, p) => {
     const used = rows.reduce((n, r) => n + r.h, 0) + (p === pages.length - 1 ? gas.tailHeight_(g, b) : 0);
-    const room = P.HEIGHT - P.NUMBER_ROW - P.COL_HEADER - P.SAFETY - (p === 0 ? gas.fullHeaderHeight_(g, b) : P.CONDENSED_HEADER);
+    const room = P.HEIGHT - P.NUMBER_ROW - P.GAP_HEADER_BODY - P.COL_HEADER - P.SAFETY - (p === 0 ? gas.fullHeaderHeight_(g, b) : P.CONDENSED_HEADER);
     assert.ok(used <= room, 'page ' + (p + 1) + ' fits: ' + used + ' <= ' + room);
   });
 });
@@ -251,10 +254,8 @@ test('numbering restarts per invoice in a combined PDF; French "Page x de y"; to
   const hf = html(fr, 'L-601');
   has(hf, 'Page 1 de ');
   has(hf, '(suite)');
-  gas.T.CONFIG.PAGE_NUMBER_POSITION = 'top';
   const ht = html(res, 'TAL-501');
-  assert.ok(ht.indexOf('class="pn"') < ht.indexOf('class="page-content"'), 'number row first');
-  gas.T.CONFIG.PAGE_NUMBER_POSITION = 'bottom';
+  assert.ok(ht.indexOf('class="pn"') < ht.indexOf('class="page-content"'), 'page number row comes first (top-right)');
 });
 
 console.log('Sample 7 — Excel hidden rows');
@@ -425,14 +426,15 @@ test('rebuild keeps the rates the job was made with', () => {
   gas.resetTaxRates();
 });
 
-test('switching to separate PDFs trashes the combined one but keeps the original', () => {
+test('switching to a combined PDF trashes the per-invoice one but keeps the original', () => {
   const { ss, res } = ws;
-  ss.getSheets()[1].grid[2][2] = 'separate';
+  assert.strictEqual(ss.getSheets()[1].grid[2][2], 'separate', 'separate is the default');
+  ss.getSheets()[1].grid[2][2] = 'combined';
   gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
   const live = folderOf(res).files().filter(f => !f.trashed).map(f => f.getName());
   assert.ok(live.some(n => n.indexOf('Original data - ') === 0));
-  assert.ok(live.some(n => /^Invoice INV-3001/.test(n)));
-  assert.ok(!live.some(n => /^All invoices/.test(n)));
+  assert.ok(live.indexOf('Invoice INV-3001.pdf') !== -1, live.join(' | '));
+  assert.ok(!live.some(n => n === 'Invoice INV-3001 - Maple Productions.pdf'));
 });
 
 test('older spreadsheets get the "generate again" message', () => {
@@ -476,23 +478,239 @@ test('logo: blank → none; PNG → embedded; unreadable / not PNG / too big →
   C.LOGO_DRIVE_FILE_ID = '';
 });
 
-test('company block, government numbers, footer: per language, French blanks fall back to English', () => {
+test('same company and bank details in both languages; only labels change; French text falls back', () => {
   const C = gas.T.CONFIG;
   const en = gas.loadBranding_('en'), fr = gas.loadBranding_('fr');
+  assert.deepStrictEqual(plain(en.company), plain(Object.assign({}, fr.company, { gov: en.company.gov })));
   assert.deepStrictEqual(plain(en.company.gov), ['HST/GST # 000000000 RT0001', 'QST # 0000000000 TQ0001']);
   assert.deepStrictEqual(plain(fr.company.gov), ['TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001', 'Permis QC 000000']);
-  const saved = JSON.stringify(C.FOOTER.fr) + JSON.stringify(C.GOVERNMENT_NUMBERS) + JSON.stringify(C.COMPANY.fr);
-  C.FOOTER.fr.remittance = ''; C.FOOTER.fr.bankDetails = []; C.COMPANY.fr.address = []; C.GOVERNMENT_NUMBERS.qst = '';
-  const fr2 = gas.loadBranding_('fr');
-  assert.strictEqual(fr2.footer.remittance, C.FOOTER.en.remittance);
-  assert.strictEqual(fr2.footer.bankDetails[0][0], 'Bank ID');
-  assert.deepStrictEqual(plain(fr2.company.address), plain(C.COMPANY.en.address));
-  assert.deepStrictEqual(plain(fr2.company.gov), ['TVH/TPS # 000000000 RT0001', 'Permis QC 000000']);
-  C.FOOTER.fr = JSON.parse(saved.slice(0, saved.indexOf('}{') + 1));
+  assert.deepStrictEqual(plain(en.footer.bankAddress), plain(fr.footer.bankAddress));
+  assert.deepStrictEqual(plain(en.footer.bankDetails), [['Bank ID', '007'], ['Bank Transit', '12345'], ['Account #', '12312312323']]);
+  assert.deepStrictEqual(plain(fr.footer.bankDetails), [["N° d'institution", '007'], ['N° de transit', '12345'], ['N° de compte', '12312312323']]);
+  assert.strictEqual(fr.footer.paymentTitle, 'Paiement par TEF');
+  const savedFr = JSON.stringify(C.FOOTER_TEXT.fr);
+  C.FOOTER_TEXT.fr.remittance = '';
+  assert.strictEqual(gas.loadBranding_('fr').footer.remittance, C.FOOTER_TEXT.en.remittance);
+  C.FOOTER_TEXT.fr = JSON.parse(savedFr);
+  C.GOVERNMENT_NUMBERS.qst = '';
+  assert.deepStrictEqual(plain(gas.loadBranding_('fr').company.gov), ['TVH/TPS # 000000000 RT0001', 'Permis QC 000000']);
   C.GOVERNMENT_NUMBERS.qst = '0000000000 TQ0001';
-  C.COMPANY.fr.address = ['ABC Store', '123 Front Street', 'Orlando, FL 30029'];
+  C.BANK.transit = '';
+  assert.deepStrictEqual(plain(gas.loadBranding_('en').footer.bankDetails.map(p => p[0])), ['Bank ID', 'Account #'], 'blank value hides its line');
+  C.BANK.transit = '12345';
   assert.strictEqual(gas.footerHtml_({ paymentTitle: '', bankAddress: [], bankDetails: [], remittance: '', disclosure: '' }), '');
   has(gas.footerHtml_(Object.assign({}, en.footer, { disclosure: '<b>x</b>' })), '&lt;b&gt;x&lt;/b&gt;', 'escaped');
+});
+
+console.log('Version 3.1 — emails, defaults, logs, metrics, layout');
+
+const logsFor = runId => world.logs.filter(l => l.entry.runId === runId).map(l => l.entry);
+const LAYOUT_B = { invoiceNumber: 'F', clientNumber: 'L', invoiceDate: 'N', dueDate: 'O', customerName: 'A', attention: 'B',
+  address1: 'C', address2: 'D', address3: 'E', address4: 'G', city: 'H', province: 'I', postalCode: 'J', country: 'K',
+  candidate: 'P', unitPrice: 'Q', units: 'R', lineType: 'S', workOrder: 'T', purchaseOrder: 'U', workDate: 'V', taxCode: 'X',
+  groupBy: { col: 'Y' }, details: [{ col: 'Z' }, { col: 'AA' }] };
+const LAYOUT_C = { invoiceNumber: 'A', invoiceDate: 'B', dueDate: 'C', clientNumber: 'D', lineType: 'E', customerName: 'F',
+  candidate: 'G', units: 'H', unitPrice: 'I', taxCode: 'J', attention: 'K', address1: 'L', address2: 'M', address3: 'N',
+  address4: 'O', city: 'P', province: 'Q', postalCode: 'R', country: 'S', workOrder: 'T', purchaseOrder: 'U', workDate: 'V',
+  groupBy: { col: 'W' }, details: [{ col: 'X' }, { col: 'Y' }] };
+
+test('defaults: one PDF per invoice and English', () => {
+  assert.strictEqual(gas.normalizeLayoutOptions_({}).outputMode, 'separate');
+  assert.strictEqual(gas.normalizeLayoutOptions_({ outputMode: 'combined' }).outputMode, 'combined');
+  assert.strictEqual(gas.sanitizeFormState_({}, {}).options.outputMode, 'separate');
+  assert.strictEqual(gas.sanitizeFormState_({}, {}).options.language, 'en');
+  const res = generate('sample-1-basic-en.csv');
+  assert.strictEqual(res.invoices.length, 2);
+  assert.ok(res.zipUrl, 'ZIP for more than one PDF');
+  assert.strictEqual(pdfHtml(res).length, 2, 'one PDF per invoice');
+});
+
+test('emails are English even for French invoices; no-reply sender name and line; no Reply-To', () => {
+  generate('sample-2-quebec-fr.csv', MAP, { language: 'fr' });
+  const m = world.emails[0];
+  assert.strictEqual(m.name, 'Invoice PDF Generator (no reply)');
+  assert.strictEqual(m.replyTo, undefined);
+  has(m.subject, 'Your 2 invoice PDFs are ready');
+  has(m.htmlBody, 'invoices were created from');
+  has(m.htmlBody, 'This is an automated message. Please don&#39;t reply.');
+  has(m.body, 'This is an automated message.');
+  hasNot(m.htmlBody, 'Votre');
+  hasNot(m.htmlBody, 'factures');
+});
+
+test('logs: page open and every generate stage, each with run id, user and timestamp', () => {
+  world.logs.length = 0;
+  gas.getConfig();
+  const open = world.logs.find(l => l.entry.stage === 'page_open').entry;
+  assert.strictEqual(open.user, OWNER);
+  assert.ok(open.runId && /^\d{4}-\d{2}-\d{2}T/.test(open.timestamp));
+  const res = generate('sample-1-basic-en.csv');
+  const stages = logsFor(res.jobId).map(e => e.stage);
+  ['start', 'request', 'file_read', 'parsed', 'folder_created', 'original_saved', 'sheet_created', 'pdfs_written',
+   'email_sent', 'run_metrics', 'done'].forEach(st => assert.ok(stages.indexOf(st) !== -1, 'stage ' + st + ' in ' + stages.join(',')));
+  assert.ok(stages.indexOf('file_read') < stages.indexOf('pdfs_written') && stages.indexOf('pdfs_written') < stages.indexOf('done'));
+  logsFor(res.jobId).forEach(e => { assert.strictEqual(e.user, OWNER); assert.strictEqual(e.app, 'invoice-pdf-generator'); assert.ok(e.timestamp); });
+  assert.ok(res.folderName.indexOf(res.jobId) !== -1, 'run id = job id = folder reference');
+  gas.listPresets();
+  assert.ok(world.logs.some(l => l.entry.function === 'listPresets' && l.entry.stage === 'done'));
+});
+
+test('unexpected error: logged with stack, emailed to DEV_EMAIL once per 10 minutes per user, user sees the reference', () => {
+  world.emails.length = 0; world.logs.length = 0; world.caches = {};
+  world.failCreateFile = 'Drive is down';
+  const run = () => gas.generateInvoices({ file: fileArg('sample-1-basic-en.csv'), mapping: MAP, options: OPTS });
+  let err1, err2;
+  try {
+  try { run(); } catch (e) { err1 = e; }
+  assert.ok(err1 && /Something went wrong \(reference \w+\)\. The developer has been notified\. Details: Drive is down/.test(err1.message), err1 && err1.message);
+  const errLog = world.logs.find(l => l.entry.stage === 'error');
+  assert.strictEqual(errLog.level, 'error');
+  has(errLog.entry.stack, 'Drive is down');
+  assert.strictEqual(errLog.entry.stageReached, 'folder_created');
+  let dev = world.emails.filter(m => m.to === 'reggie.leigh@gmail.com');
+  assert.strictEqual(dev.length, 1);
+  has(dev[0].subject, '[Invoice PDF Generator] Error in generateInvoices (run ');
+  ['Run id:', 'User:          ' + OWNER, 'Stage reached: folder_created', 'sample-1-basic-en.csv', 'Error: Drive is down']
+    .forEach(t => has(dev[0].body, t));
+  hasNot(dev[0].body, 'Northwind', 'file contents never included');
+  try { run(); } catch (e) { err2 = e; }
+  assert.ok(err2);
+  assert.strictEqual(world.emails.filter(m => m.to === 'reggie.leigh@gmail.com').length, 1, 'same error not emailed twice');
+  assert.ok(world.logs.some(l => l.entry.stage === 'dev_email_skipped'));
+  gas.__setUser('ben@example.com');
+  try { run(); } catch (e) { /* expected */ }
+  assert.strictEqual(world.emails.filter(m => m.to === 'reggie.leigh@gmail.com').length, 2, 'another user: emailed');
+  } finally {
+    gas.__setUser(OWNER);
+    world.failCreateFile = null;
+  }
+});
+
+test('user mistakes are logged as warnings and not emailed', () => {
+  world.emails.length = 0; world.logs.length = 0;
+  assert.throws(() => generate('sample-1-basic-en.csv', Object.assign({}, MAP, { lineType: '' })), /^Error: Line type is required/);
+  const w = world.logs.find(l => l.entry.stage === 'user_error');
+  assert.strictEqual(w.level, 'warn');
+  has(w.entry.message, 'Line type is required');
+  assert.strictEqual(world.emails.length, 0);
+  gas.__setUser('not.an.admin@example.com');
+  assert.throws(() => gas.saveTaxRates({}), /only be changed by an admin/);
+  gas.__setUser(OWNER);
+  assert.strictEqual(world.emails.length, 0);
+});
+
+test('run metrics: one row per client per Generate, [runId, user, clientId, invoices, runTimeMs]; none on Rebuild', () => {
+  const sent = [];
+  gas.sendRunMetrics_ = rows => sent.push(rows);
+  const res = generate('sample-4-tax-codes.csv');
+  assert.strictEqual(sent.length, 1);
+  const rows = sent[0];
+  assert.strictEqual(rows.length, 12, 'one row per client');
+  rows.forEach(r => {
+    assert.strictEqual(r.length, 5);
+    assert.strictEqual(r[0], res.jobId);
+    assert.strictEqual(r[1], OWNER);
+    assert.strictEqual(r[3], 1);
+    assert.ok(Number.isInteger(r[4]) && r[4] >= 0, 'whole ms');
+  });
+  assert.strictEqual(rows[0][2], 'C-401');
+  const res1 = generate('sample-1-basic-en.csv');
+  assert.deepStrictEqual(plain(sent[1].map(r => [r[2], r[3]])), [['C-1001', 1], ['C-1002', 1]]);
+  const logged = logsFor(res1.jobId).find(e => e.stage === 'run_metrics');
+  assert.deepStrictEqual(plain(logged.rows), plain(sent[1]));
+  gas.rebuildFromSpreadsheet({ sheet: res1.sheetUrl });
+  assert.strictEqual(sent.length, 2, 'rebuild produces no rows');
+  gas.sendRunMetrics_ = () => { throw new Error('library down'); };
+  const res2 = generate('sample-1-basic-en.csv');
+  assert.strictEqual(res2.invoices.length, 2, 'metrics failure never fails the run');
+  assert.ok(logsFor(res2.jobId).some(e => e.stage === 'metrics_failed'));
+  // blank client # → ''
+  const g = gas.buildRunMetrics_({ id: 'r1', user: 'u', started: Date.now() }, [{ clientNumber: '' }, { clientNumber: '' }, { clientNumber: 'X' }]);
+  assert.deepStrictEqual(plain(g.map(r => [r[2], r[3]])), [['', 2], ['X', 1]]);
+  gas.sendRunMetrics_ = () => {};
+});
+
+test('two users at once: separate folders, sheets, presets, emails, logs and metrics; shared tax rates', () => {
+  world.emails.length = 0;
+  const A = 'ana@example.com', B = 'ben@example.com';
+  gas.__setUser(A); const pa = gas.parseUpload_({ file: fileArg('sample-1-basic-en.csv'), mapping: MAP, options: OPTS }, 'a');
+  gas.__setUser(B); const rb = generate('sample-3-projects.csv', withGroup()); const mailB = world.emails.map(m => m.to);
+  gas.__setUser(A); const ra = generate('sample-1-basic-en.csv'); const mailA = world.emails.map(m => m.to);
+  assert.strictEqual(pa.grouped.invoices.length, 2);
+  assert.notStrictEqual(ra.folderUrl, rb.folderUrl);
+  assert.notStrictEqual(ra.sheetUrl, rb.sheetUrl);
+  assert.notStrictEqual(ra.jobId, rb.jobId);
+  assert.deepStrictEqual([mailB, mailA], [[B], [A]], 'each result email goes only to its own user');
+  assert.ok(logsFor(ra.jobId).every(e => e.user === A) && logsFor(rb.jobId).every(e => e.user === B));
+  gas.__setUser(A); gas.savePreset({ name: 'Mine', mapping: MAP, options: {} });
+  gas.__setUser(B); assert.strictEqual(gas.listPresets().presets.filter(p => p.name === 'Mine').length, 0, 'presets private');
+  assert.strictEqual(gas.getConfig().tax.rates.ONHST, gas.T.DEFAULT_TAX_RATES.ONHST, 'shared tax rates');
+  // A rebuild in progress blocks a second rebuild of the same sheet, from anyone.
+  const ss = world.sheets[ra.sheetUrl.match(/d\/([^/]+)/)[1]];
+  gas.claimSpreadsheet_(ss);
+  assert.throws(() => gas.rebuildFromSpreadsheet({ sheet: ra.sheetUrl }), /already being rebuilt/);
+  gas.releaseSpreadsheet_(ss);
+  gas.__setUser(A); gas.deletePreset('Mine');
+  gas.__setUser(OWNER);
+});
+
+test('invoice: units total, page number first on every page, spacing, footer row at the bottom', () => {
+  const res = parse('sample-1-basic-en.csv', MAP, { combineEmployees: true });
+  const h = html(res, 'TAL-501');
+  has(h, '<tr class="total"><td>Total</td><td class="num">44.5</td></tr>');
+  has(h, '.items{margin-top:24pt;');
+  has(h, 'class="summary" style="margin-top:28pt"');
+  has(h, '.footer{margin-top:30pt;');
+  assert.ok(h.indexOf('<td class="pn"') < h.indexOf('Invoice #'), 'page number before the header');
+  assert.ok(h.indexOf('<td class="page-footer">') > h.indexOf('Total (CAD)'), 'footer in its own bottom row');
+  has(h, '<td class="page-content" style="height:100%">');
+  const fr = html(parse('sample-2-quebec-fr.csv', MAP, { language: 'fr' }), 'FAC-2001');
+  has(fr, '<tr class="total"><td>Total</td><td class="num">32</td></tr>');
+  gas.T.CONFIG.FOOTER_AT_PAGE_BOTTOM = false;
+  const h2 = html(res, 'TAL-501');
+  hasNot(h2, 'class="page-footer"');
+  assert.ok(h2.indexOf('EFT Payment') > h2.indexOf('Total (CAD)'), 'footer follows the totals');
+  gas.T.CONFIG.FOOTER_AT_PAGE_BOTTOM = true;
+  const long = html(parse('sample-6-long.csv', withGroup()), 'L-601');
+  const pages = long.split('<table class="page"').slice(1);
+  pages.forEach((p, i) => assert.ok(p.indexOf('class="pn"') < p.indexOf('class="page-content"'), 'page ' + (i + 1)));
+  assert.strictEqual((long.match(/class="page-footer"/g) || []).length, 1, 'footer only on the last page');
+});
+
+test('long strings: soft break points, nothing unbreakable over 14 characters, pagination fits', () => {
+  const res = parse('sample-10-long-strings.csv', withGroup());
+  const raw = rawHtml(res);
+  has(raw, 'Maximiliana Alexandrovna Konstantinop<wbr>');
+  has(raw, 'WO-<wbr>2026-<wbr>');
+  has(raw, 'AnUnbrokenCa<wbr>');
+  has(raw, '$1,250,000.00');
+  has(raw, '$3,749,999.63');
+  // Every word in visible text is ≤ 14 characters or contains break points.
+  const text = raw.replace(/<style>[\s\S]*?<\/style>/, '').replace(/<img[^>]*>/g, '').replace(/<(?!wbr)[^>]+>/g, ' ');
+  text.split(/\s+/).forEach(w => {
+    if (w.replace(/<wbr>/g, '').length > 14) assert.ok(w.indexOf('<wbr>') !== -1, 'unbreakable: ' + w);
+  });
+  const i = inv(res, 'INV-2026-11-LONG-INVOICE-NUMBER-0000123456');
+  const b = gas.loadBranding_('en');
+  const pages = gas.paginateInvoice_(i, b);
+  const P = gas.T.PAGE;
+  pages.forEach((rows, p) => {
+    const used = rows.reduce((n, r) => n + r.h, 0) + (p === pages.length - 1 ? gas.tailHeight_(i, b) : 0);
+    const room = P.HEIGHT - P.NUMBER_ROW - P.GAP_HEADER_BODY - P.COL_HEADER - P.SAFETY - (p === 0 ? gas.fullHeaderHeight_(i, b) : P.CONDENSED_HEADER);
+    assert.ok(used <= room, 'page ' + (p + 1) + ' fits');
+  });
+});
+
+test('different column layouts (samples 8 and 9) give the same invoices as the standard layout', () => {
+  const a = parse('sample-1-basic-en.csv', withGroup()).grouped.invoices.concat(parse('sample-3-projects.csv', withGroup()).grouped.invoices);
+  const b = parse('sample-8-layout-b.csv', LAYOUT_B).grouped.invoices;
+  const c = parse('sample-9-layout-c.csv', LAYOUT_C, { numberFormat: 'comma' }).grouped.invoices;
+  const sum = list => plain(list.map(i => [i.number, i.clientNumber, i.invoiceDate, i.customerName, i.subtotal, i.total,
+    i.unitsSummary, gas.formatClientAddress_(i.address), i.groups.map(g => g.value)]));
+  assert.deepStrictEqual(sum(b), sum(a));
+  assert.deepStrictEqual(sum(c), sum(a));
+  assert.strictEqual(parse('sample-8-layout-b.csv', LAYOUT_B).grouped.invoices[0].groupLabel, 'Project');
+  assert.strictEqual(parse('sample-9-layout-c.csv', LAYOUT_C).grouped.invoices[0].groupLabel, 'Projet');
 });
 
 if (process.argv.includes('--html')) {
@@ -504,7 +722,8 @@ if (process.argv.includes('--html')) {
    ['4-tax-codes', 'sample-4-tax-codes.csv', MAP, {}],
    ['5-edge-cases', 'sample-5-edge-cases.csv', MAP, {}],
    ['6-long-en', 'sample-6-long.csv', withGroup(), {}],
-   ['6-long-fr', 'sample-6-long.csv', withGroup(), { language: 'fr' }]].forEach(([name, file, map, o]) => {
+   ['6-long-fr', 'sample-6-long.csv', withGroup(), { language: 'fr' }],
+   ['10-long-strings', 'sample-10-long-strings.csv', withGroup(), {}]].forEach(([name, file, map, o]) => {
     fs.writeFileSync(path.join(out, name + '.html'), html(parse(file, map, o)));
   });
   console.log('Wrote invoice HTML to tests/out/');

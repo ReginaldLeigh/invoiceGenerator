@@ -118,17 +118,20 @@ const TAX_CODE_ORDER = ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'];
 // ---------------------------------------------------------------------------
 // Calibrated against Chrome's rendering of the samples (measured: plain line 17.4pt,
 // line with 2 details 37.7pt, column headings 19pt, group heading 17.5pt, condensed
-// header 54pt, footer ~112pt), plus a safety margin for Google's converter.
+// header 54pt, footer ~96pt), plus a safety margin for Google's converter.
 const PAGE = {
-  HEIGHT: 680,          // height of each page block (Letter is 792pt; the rest is margin)
-  NUMBER_ROW: 18,       // "Page X of Y" row
-  COL_HEADER: 21,       // column heading row of the body table
-  GROUP_ROW: 19,        // a group heading row
-  LINE_PAD: 8,          // padding of a line row
-  TEXT_LINE: 10.5,      // one line of 8.5pt text
-  DETAIL_LINE: 10,      // one extra-detail line (7.5pt)
-  CONDENSED_HEADER: 58, // header on pages 2+
-  SAFETY: 14,           // spare room on every page
+  HEIGHT: 680,            // height of each page block (Letter is 792pt; the rest is margin)
+  NUMBER_ROW: 16,         // "Page X of Y" row at the top
+  COL_HEADER: 21,         // column heading row of the body table
+  GROUP_ROW: 19,          // a group heading row
+  LINE_PAD: 8,            // padding of a line row
+  TEXT_LINE: 10.5,        // one line of 8.5pt text
+  DETAIL_LINE: 10,        // one extra-detail line (7.5pt)
+  CONDENSED_HEADER: 58,   // header on pages 2+
+  GAP_HEADER_BODY: 24,    // space between the invoice header and the body
+  GAP_BODY_SUMMARY: 28,   // space between the body and the units summary / totals
+  GAP_SUMMARY_FOOTER: 30, // minimum space between the units summary / totals and the footer
+  SAFETY: 14,             // spare room on every page
 };
 
 // ---------------------------------------------------------------------------
@@ -151,6 +154,8 @@ const I18N = {
     taxCodes: ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'],
     gov: [['gstHst', 'HST/GST # '], ['qst', 'QST # ']],
     phonePrefix: 'T. ',
+    footerLabels: { paymentTitle: 'EFT Payment', bankId: 'Bank ID', transit: 'Bank Transit', account: 'Account #' },
+    unitsTotal: 'Total',
     continued: '(continued)',
     page: (n, of) => 'Page ' + n + ' of ' + of,
     groupDefault: 'Group',
@@ -175,6 +180,7 @@ const I18N = {
       rebuildLink: 'rebuild the PDF',
       rebuildManual: 'Need a small change? Edit the spreadsheet in the Drive folder, then paste its link into the web app to rebuild the PDF.',
       updatedPrefix: 'Updated: ',
+      noReply: 'This is an automated message. Please don\'t reply.',
     },
     sheet: {
       fileName: src => 'Invoices - ' + src + ' (editable)',
@@ -219,31 +225,14 @@ const I18N = {
     taxCodes: ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'],
     gov: [['gstHst', 'TVH/TPS # '], ['qst', 'TVQ # '], ['quebecPermit', 'Permis QC ']],
     phonePrefix: 'T. ',
+    footerLabels: { paymentTitle: 'Paiement par TEF', bankId: 'N° d\'institution', transit: 'N° de transit', account: 'N° de compte' },
+    unitsTotal: 'Total',
     continued: '(suite)',
     page: (n, of) => 'Page ' + n + ' de ' + of,
     groupDefault: 'Groupe',
     detailDefault: 'Détail ',
     fileInvoice: 'Facture',
     fileAll: 'Toutes les factures',
-    email: {
-      subjectOne: 'Votre facture PDF est prête',
-      subjectMany: n => 'Vos ' + n + ' factures PDF sont prêtes',
-      subjectCombined: n => 'Votre PDF de factures est prêt (' + n + ' factures)',
-      intro: (n, file) => n + ' facture' + (n === 1 ? ' a été créée' : 's ont été créées') + ' à partir de <strong>' + file + '</strong>.',
-      openPdf: 'Ouvrir le PDF dans Google Drive',
-      openZip: 'Télécharger toutes les factures (ZIP)',
-      openFolder: 'Ouvrir le dossier Drive',
-      originalData: 'Fichier de données d\'origine',
-      listTitle: 'Factures',
-      more: n => '…et ' + n + ' autre' + (n === 1 ? '' : 's') + ' dans le dossier Drive.',
-      reference: 'Référence',
-      footer: 'Envoyé par Invoice PDF Generator.',
-      editSheet: 'Modifier dans Google Sheets',
-      rebuildHint: 'Une petite correction ? Modifiez la feuille de calcul, puis',
-      rebuildLink: 'régénérez le PDF',
-      rebuildManual: 'Une petite correction ? Modifiez la feuille de calcul dans le dossier Drive, puis collez son lien dans l\'application Web pour régénérer le PDF.',
-      updatedPrefix: 'Mise à jour : ',
-    },
     sheet: {
       fileName: src => 'Factures - ' + src + ' (modifiable)',
       itemsTab: 'Factures',
@@ -294,84 +283,108 @@ function doGet(e) {
  * presets (and the full default preset, which fills in the form), tax rates.
  */
 function getConfig() {
-  const props = PropertiesService.getUserProperties();
-  const saved = props.getProperty(settingsKey_());
-  const state = presetState_(props);
-  let parsed = null;
-  try { parsed = saved ? sanitizeFormState_(JSON.parse(saved).mapping, JSON.parse(saved).options) : null; } catch (e) { parsed = null; }
-  return {
-    fields: FIELDS,
-    userEmail: currentUserEmail_(),
-    saved: parsed,
-    presets: state.presets,
-    defaultName: state.defaultName,
-    defaultPreset: state.defaultName ? readPreset_(props, state.defaultName) : null,
-    tax: taxState_(),
-    taxCodes: { en: I18N.en.taxCodes, fr: I18N.fr.taxCodes },
-  };
+  const run = newRun_('getConfig');
+  log_(run, 'page_open'); // who is accessing the app
+  try {
+    const props = PropertiesService.getUserProperties();
+    const saved = props.getProperty(settingsKey_());
+    const state = presetState_(props);
+    let parsed = null;
+    try { parsed = saved ? sanitizeFormState_(JSON.parse(saved).mapping, JSON.parse(saved).options) : null; } catch (e) { parsed = null; }
+    return {
+      fields: FIELDS,
+      userEmail: run.user,
+      saved: parsed,
+      presets: state.presets,
+      defaultName: state.defaultName,
+      defaultPreset: state.defaultName ? readPreset_(props, state.defaultName) : null,
+      tax: taxState_(),
+      taxCodes: { en: I18N.en.taxCodes, fr: I18N.fr.taxCodes },
+    };
+  } catch (e) {
+    handleRunError_(run, e);
+  }
 }
 
 /** Returns the first rows of the uploaded file (hidden Excel rows left out) so users can pick columns. */
 function previewFile(file) {
-  const rows = readRows_(file, 'preview-' + newJobId_()).rows;
-  const width = Math.min(MAX_PREVIEW_COLS, rows.reduce((w, r) => Math.max(w, r.length), 0));
-  const columns = [];
-  for (let i = 0; i < width; i++) columns.push(indexToCol_(i));
-  return {
-    columns: columns,
-    rows: rows.slice(0, MAX_PREVIEW_ROWS).map(r => columns.map((_, i) => r[i] == null ? '' : String(r[i]))),
-    totalRows: rows.length,
-  };
+  return withRun_('previewFile', run => {
+    run.context.file = fileInfo_(file);
+    const rows = readRows_(file, 'preview-' + run.id).rows;
+    const width = Math.min(MAX_PREVIEW_COLS, rows.reduce((w, r) => Math.max(w, r.length), 0));
+    const columns = [];
+    for (let i = 0; i < width; i++) columns.push(indexToCol_(i));
+    return {
+      columns: columns,
+      rows: rows.slice(0, MAX_PREVIEW_ROWS).map(r => columns.map((_, i) => r[i] == null ? '' : String(r[i]))),
+      totalRows: rows.length,
+    };
+  });
 }
 
 /**
  * Main action. request = { file: { name, base64 }, mapping: { invoiceNumber: 'A', ..., details, groupBy },
  *   options: { hasHeader, dateFormat, numberFormat, language, outputMode, combineEmployees } }
  * The files and the email always go to the signed-in user; any recipient in the request is ignored.
+ * The run id is also the job id (folder name, results page, email, logs).
  */
 function generateInvoices(request) {
-  request = request || {};
-  const recipient = currentUserEmail_();
-  if (!recipient) throw new Error('We couldn\'t confirm your Google account. Reload the page and sign in again.');
-  const jobId = newJobId_();
-  const parsed = parseUpload_(request, jobId);
-  saveSettings_(request.mapping, request.options);
+  return withRun_('generateInvoices', run => {
+    request = request || {};
+    const recipient = run.user;
+    if (!recipient) throw userError_('We couldn\'t confirm your Google account. Reload the page and sign in again.');
+    const jobId = run.id;
+    run.context.file = fileInfo_(request.file);
+    const o = request.options || {};
+    log_(run, 'request', { file: run.context.file, language: o.language === 'fr' ? 'fr' : 'en',
+      outputMode: o.outputMode === 'combined' ? 'combined' : 'separate' });
+    const parsed = parseUpload_(request, jobId, run);
+    saveSettings_(request.mapping, request.options);
 
-  const sourceName = String(request.file.name || 'upload');
-  const folder = createJobFolder_(sourceName, jobId);
-  let ss, built;
-  try {
-    const original = saveOriginal_(folder, request.file);
-    // 1) Write the editable spreadsheet, 2) build the PDFs *from* it, so the two always match.
-    ss = createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, original.getId());
-    built = renderFromSpreadsheet_(ss);
-  } catch (e) {
-    folder.setTrashed(true); // don't leave half-finished jobs behind
-    throw e;
-  }
+    const sourceName = String(request.file.name || 'upload');
+    const folder = createJobFolder_(sourceName, jobId);
+    log_(run, 'folder_created', { folderId: folder.getId() });
+    let ss, built;
+    try {
+      const original = saveOriginal_(folder, request.file);
+      log_(run, 'original_saved');
+      // 1) Write the editable spreadsheet, 2) build the PDFs *from* it, so the two always match.
+      ss = createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, original.getId());
+      log_(run, 'sheet_created', { spreadsheetId: ss.getId() });
+      built = renderFromSpreadsheet_(ss, run);
+    } catch (e) {
+      folder.setTrashed(true); // don't leave half-finished jobs behind
+      throw e;
+    }
 
-  const warnings = built.warnings.slice();
-  let emailedTo = null;
-  try {
-    sendResultEmail_(recipient, built, ss, false);
-    emailedTo = recipient;
-  } catch (e) {
-    warnings.push('The files were created, but the email could not be sent: ' + e.message);
-  }
-  return jobResponse_(built, ss, parsed.grouped.skipped, parsed.notes, emailedTo, warnings, false);
+    const warnings = built.warnings.slice();
+    let emailedTo = null;
+    try {
+      sendResultEmail_(recipient, built, ss, false);
+      emailedTo = recipient;
+      log_(run, 'email_sent');
+    } catch (e) {
+      warnings.push('The files were created, but the email could not be sent: ' + e.message);
+      log_(run, 'email_failed', { message: e.message }, 'warn');
+    }
+    const result = jobResponse_(built, ss, parsed.grouped.skipped, parsed.notes, emailedTo, warnings, false);
+    recordRunMetrics_(run, parsed.grouped.invoices);
+    return result;
+  });
 }
 
 /**
  * Validates the request and reads the uploaded file into invoices.
  * Returns { mapping, opts, grouped, notes }. No Drive files are created here.
  */
-function parseUpload_(request, jobId) {
+function parseUpload_(request, jobId, run) {
   const mapping = normalizeMapping_(request.mapping || {});
   const opts = normalizeOptions_(request.options || {});
   const L = I18N[opts.language];
-  if (!request.file || !request.file.base64) throw new Error('Please choose a CSV or XLSX file first.');
+  if (!request.file || !request.file.base64) throw userError_('Please choose a CSV or XLSX file first.');
 
   const data = readRows_(request.file, jobId);
+  if (run) log_(run, 'file_read', { rows: data.rows.length, hiddenRows: data.hiddenRows || 0 });
   let rows = data.rows, rowNums = data.rowNumbers;
   const headerRow = opts.hasHeader ? (rows[0] || []) : [];
   if (opts.hasHeader) { rows = rows.slice(1); rowNums = rowNums.slice(1); }
@@ -383,8 +396,9 @@ function parseUpload_(request, jobId) {
   if (mapping.groupBy) mapping.groupBy.label = mapping.groupBy.label || header(mapping.groupBy.index) || L.groupDefault;
 
   const grouped = groupInvoices_(rows, mapping, opts, rowNums);
+  if (run) log_(run, 'parsed', { invoices: grouped.invoices.length, skipped: grouped.skipped.length, notes: grouped.notes.length });
   if (!grouped.invoices.length) {
-    throw new Error('No invoices could be built from this file. Check your column letters' +
+    throw userError_('No invoices could be built from this file. Check your column letters' +
       (grouped.skipped.length ? ' — first problem: row ' + grouped.skipped[0].row + ': ' + grouped.skipped[0].reason : '.'));
   }
   const notes = (data.notes || []).concat(grouped.notes);
@@ -395,45 +409,51 @@ function parseUpload_(request, jobId) {
  * Rebuilds the PDFs from an edited invoice spreadsheet, without re-uploading.
  * request = { sheet: spreadsheet URL or ID, notify: true to email the updated links }
  * Existing PDFs are overwritten in place, so links that were already shared keep working.
+ * Rebuilds don't produce run metrics.
  */
 function rebuildFromSpreadsheet(request) {
-  request = request || {};
-  const id = extractSpreadsheetId_(request.sheet);
-  if (!id) throw new Error('Please paste the link to the invoice spreadsheet.');
-  let ss;
-  try {
-    ss = SpreadsheetApp.openById(id);
-  } catch (e) {
-    throw new Error('Could not open that spreadsheet. Check the link, and make sure you have edit access to it.');
-  }
-  const meta = readMeta_(ss);
-  if (!meta) throw new Error('That spreadsheet was not created by Invoice PDF Generator, so it cannot be rebuilt.');
-  if (String(meta.version) !== SHEET_VERSION) {
-    throw new Error('This spreadsheet was made with an older version of Invoice PDF Generator, so it can\'t be rebuilt. ' +
-      'Generate it again from the original file.');
-  }
-
-  claimSpreadsheet_(ss); // stops two people (or tabs) rebuilding the same spreadsheet at once
-  let built;
-  try {
-    built = renderFromSpreadsheet_(ss);
-  } finally {
-    releaseSpreadsheet_(ss);
-  }
-
-  const warnings = built.warnings.slice();
-  let emailedTo = null;
-  if (request.notify) {
-    const me = currentUserEmail_();
+  return withRun_('rebuildFromSpreadsheet', run => {
+    request = request || {};
+    const id = extractSpreadsheetId_(request.sheet);
+    if (!id) throw userError_('Please paste the link to the invoice spreadsheet.');
+    let ss;
     try {
-      if (!me) throw new Error('your email address is not available');
-      sendResultEmail_(me, built, ss, true);
-      emailedTo = me;
+      ss = SpreadsheetApp.openById(id);
     } catch (e) {
-      warnings.push('The PDF was rebuilt, but the email could not be sent: ' + e.message);
+      throw userError_('Could not open that spreadsheet. Check the link, and make sure you have edit access to it.');
     }
-  }
-  return jobResponse_(built, ss, built.skipped, built.notes, emailedTo, warnings, true);
+    const meta = readMeta_(ss);
+    if (!meta) throw userError_('That spreadsheet was not created by Invoice PDF Generator, so it cannot be rebuilt.');
+    if (String(meta.version) !== SHEET_VERSION) {
+      throw userError_('This spreadsheet was made with an older version of Invoice PDF Generator, so it can\'t be rebuilt. ' +
+        'Generate it again from the original file.');
+    }
+    log_(run, 'opened', { spreadsheetId: id, jobId: meta.jobId });
+
+    claimSpreadsheet_(ss); // stops two people (or tabs) rebuilding the same spreadsheet at once
+    log_(run, 'claimed');
+    let built;
+    try {
+      built = renderFromSpreadsheet_(ss, run);
+    } finally {
+      releaseSpreadsheet_(ss);
+    }
+
+    const warnings = built.warnings.slice();
+    let emailedTo = null;
+    if (request.notify) {
+      try {
+        if (!run.user) throw userError_('your email address is not available');
+        sendResultEmail_(run.user, built, ss, true);
+        emailedTo = run.user;
+        log_(run, 'email_sent');
+      } catch (e) {
+        warnings.push('The PDF was rebuilt, but the email could not be sent: ' + e.message);
+        log_(run, 'email_failed', { message: e.message }, 'warn');
+      }
+    }
+    return jobResponse_(built, ss, built.skipped, built.notes, emailedTo, warnings, true);
+  });
 }
 
 function jobResponse_(built, ss, skipped, notes, emailedTo, warnings, rebuilt) {
@@ -479,14 +499,14 @@ function saveOriginal_(folder, file) {
 // One preset can be the default: it fills in the form when the page opens.
 
 /** Returns { presets: [{ name, updated, isDefault }], defaultName }. */
-function listPresets() {
+function listPresetsImpl_() {
   return presetState_(PropertiesService.getUserProperties());
 }
 
 /** Returns one preset { name, mapping, options, headers, updated }, or throws if it doesn't exist. */
-function getPreset(name) {
+function getPresetImpl_(name) {
   const preset = readPreset_(PropertiesService.getUserProperties(), name);
-  if (!preset) throw new Error('The preset "' + String(name || '') + '" no longer exists.');
+  if (!preset) throw userError_('The preset "' + String(name || '') + '" no longer exists.');
   const form = sanitizeFormState_(preset.mapping, preset.options); // upgrades presets saved by older versions
   return Object.assign({}, preset, form);
 }
@@ -495,14 +515,14 @@ function getPreset(name) {
  * Saves the form as a preset. Saving under an existing name (any capitalisation)
  * replaces that preset. request = { name, mapping, options, headers, makeDefault }
  */
-function savePreset(request) {
+function savePresetImpl_(request) {
   request = request || {};
   const props = PropertiesService.getUserProperties();
   const name = cleanPresetName_(request.name);
   const key = presetKey_(name);
   const existing = readPreset_(props, name);
   if (!existing && presetState_(props).presets.length >= MAX_PRESETS) {
-    throw new Error('You already have ' + MAX_PRESETS + ' presets. Delete one before saving a new one.');
+    throw userError_('You already have ' + MAX_PRESETS + ' presets. Delete one before saving a new one.');
   }
 
   const form = sanitizeFormState_(request.mapping, request.options);
@@ -515,7 +535,7 @@ function savePreset(request) {
                    updated: new Date().toISOString() };
   const json = JSON.stringify(preset);
   if (Utilities.newBlob(json).getBytes().length > MAX_PRESET_BYTES) {
-    throw new Error('This preset is too large to save. Shorten the extra-detail labels and try again.');
+    throw userError_('This preset is too large to save. Shorten the extra-detail labels and try again.');
   }
   props.setProperty(key, json);
   if (request.makeDefault) props.setProperty(presetDefaultKey_(), key);
@@ -523,7 +543,7 @@ function savePreset(request) {
 }
 
 /** Deletes a preset (and clears the default if it was the default). */
-function deletePreset(name) {
+function deletePresetImpl_(name) {
   const props = PropertiesService.getUserProperties();
   const key = presetKey_(cleanPresetName_(name));
   props.deleteProperty(key);
@@ -532,17 +552,27 @@ function deletePreset(name) {
 }
 
 /** Makes a preset the default (fills in the form on page load). An empty name clears the default. */
-function setDefaultPreset(name) {
+function setDefaultPresetImpl_(name) {
   const props = PropertiesService.getUserProperties();
   if (!String(name || '').trim()) {
     props.deleteProperty(presetDefaultKey_());
   } else {
     const clean = cleanPresetName_(name);
-    if (!readPreset_(props, clean)) throw new Error('The preset "' + clean + '" no longer exists.');
+    if (!readPreset_(props, clean)) throw userError_('The preset "' + clean + '" no longer exists.');
     props.setProperty(presetDefaultKey_(), presetKey_(clean));
   }
   return presetState_(props);
 }
+
+// Functions the page calls (google.script.run). Each one is logged with its own run id;
+// unexpected errors are emailed to the developer (see withRun_).
+function listPresets() { return withRun_('listPresets', () => listPresetsImpl_()); }
+function getPreset(name) { return withRun_('getPreset', () => getPresetImpl_(name)); }
+function savePreset(request) { return withRun_('savePreset', () => savePresetImpl_(request)); }
+function deletePreset(name) { return withRun_('deletePreset', () => deletePresetImpl_(name)); }
+function setDefaultPreset(name) { return withRun_('setDefaultPreset', () => setDefaultPresetImpl_(name)); }
+function saveTaxRates(rates) { return withRun_('saveTaxRates', () => saveTaxRatesImpl_(rates)); }
+function resetTaxRates() { return withRun_('resetTaxRates', () => resetTaxRatesImpl_()); }
 
 function presetPrefix_() {
   return 'preset:' + currentUserEmail_().toLowerCase() + ':';
@@ -556,8 +586,8 @@ function presetDefaultKey_() {
 
 function cleanPresetName_(name) {
   const s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
-  if (!s) throw new Error('Please give the preset a name.');
-  if (s.length > MAX_PRESET_NAME) throw new Error('Preset names can be up to ' + MAX_PRESET_NAME + ' characters.');
+  if (!s) throw userError_('Please give the preset a name.');
+  if (s.length > MAX_PRESET_NAME) throw userError_('Preset names can be up to ' + MAX_PRESET_NAME + ' characters.');
   return s;
 }
 
@@ -624,7 +654,7 @@ function sanitizeFormState_(rawMapping, rawOptions) {
     dateFormat: oneOf(o.dateFormat, ['auto', 'mdy', 'dmy'], 'auto'),
     numberFormat: oneOf(o.numberFormat, ['auto', 'dot', 'comma'], 'auto'),
     language: oneOf(o.language, ['en', 'fr'], 'en'),
-    outputMode: oneOf(o.outputMode, ['combined', 'separate'], 'combined'),
+    outputMode: oneOf(o.outputMode, ['combined', 'separate'], 'separate'),
   };
   return { mapping: mapping, options: options };
 }
@@ -695,11 +725,11 @@ function isTaxAdmin_() {
 }
 
 function requireTaxAdmin_() {
-  if (!isTaxAdmin_()) throw new Error('Tax rates can only be changed by an admin.');
+  if (!isTaxAdmin_()) throw userError_('Tax rates can only be changed by an admin.');
 }
 
 /** Saves new rates (admins only). rates = { GST: '5', HST: '15', ... } as percentages. */
-function saveTaxRates(rates) {
+function saveTaxRatesImpl_(rates) {
   requireTaxAdmin_();
   const clean = {}, errors = [];
   TAX_RATE_KEYS.forEach(k => {
@@ -710,13 +740,13 @@ function saveTaxRates(rates) {
       clean[k] = Number(s);
     }
   });
-  if (errors.length) throw new Error(errors.join(' '));
+  if (errors.length) throw userError_(errors.join(' '));
   writeTaxRates_(clean);
   return taxState_();
 }
 
 /** Restores the starting rates (admins only). */
-function resetTaxRates() {
+function resetTaxRatesImpl_() {
   requireTaxAdmin_();
   writeTaxRates_(Object.assign({}, DEFAULT_TAX_RATES));
   return taxState_();
@@ -752,6 +782,154 @@ function computeTaxes_(code, subtotal, rates) {
 }
 
 // ---------------------------------------------------------------------------
+// Runs, logs, errors and metrics
+// ---------------------------------------------------------------------------
+//
+// Every call from the page is a "run" with its own id. Each run writes JSON log
+// lines (Apps Script → Executions / Cloud Logging): who, when, which function,
+// and progress stages. Nothing is shared between runs, so users never interfere.
+
+const APP_NAME = 'invoice-pdf-generator';
+const DEV_EMAIL_REPEAT_SECONDS = 600; // the same error from the same user is emailed at most every 10 minutes
+
+function newRun_(fnName, runId) {
+  return { id: runId || newJobId_(), fn: fnName, user: currentUserEmail_(), started: Date.now(), stage: 'start', context: {} };
+}
+
+/** One structured log line: { app, runId, user, timestamp, function, stage, ...data }. */
+function log_(run, stage, data, level) {
+  if (stage !== 'error' && stage !== 'user_error') run.stage = stage;
+  const entry = Object.assign({
+    app: APP_NAME, runId: run.id, user: run.user, timestamp: new Date().toISOString(), function: run.fn, stage: stage,
+  }, data || {});
+  const line = JSON.stringify(entry);
+  try {
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    else console.log(line);
+  } catch (e) { /* logging must never break a run */ }
+  return entry;
+}
+
+/** An error caused by the user's input or permissions: shown to them, logged, not emailed to the developer. */
+function userError_(message) {
+  const e = new Error(message);
+  e.userFacing = true;
+  return e;
+}
+
+/** Runs fn(run) with start/done logs; logs every error and emails unexpected ones to DEV_EMAIL. */
+function withRun_(fnName, fn) {
+  const run = newRun_(fnName);
+  log_(run, 'start');
+  try {
+    const out = fn(run);
+    log_(run, 'done', { ms: Date.now() - run.started });
+    return out;
+  } catch (e) {
+    handleRunError_(run, e);
+  }
+}
+
+function handleRunError_(run, e) {
+  const message = (e && e.message) || String(e);
+  if (e && e.userFacing) {
+    log_(run, 'user_error', { message: message, stageReached: run.stage, ms: Date.now() - run.started }, 'warn');
+    throw e;
+  }
+  log_(run, 'error', { message: message, stack: String((e && e.stack) || ''), stageReached: run.stage,
+    file: run.context.file || null, ms: Date.now() - run.started }, 'error');
+  sendDevErrorEmail_(run, e);
+  throw new Error('Something went wrong (reference ' + run.id + '). The developer has been notified. Details: ' + message);
+}
+
+function fileInfo_(file) {
+  if (!file) return null;
+  return { name: String(file.name || ''), sizeBytes: Math.floor(String(file.base64 || '').length * 3 / 4) };
+}
+
+/** Emails an unexpected error to DEV_EMAIL (English, from the user's account), at most once per 10 minutes per error. */
+function sendDevErrorEmail_(run, e) {
+  const to = cleanText_(cfg_().DEV_EMAIL);
+  if (!to) return;
+  const message = (e && e.message) || String(e);
+  try {
+    const cache = CacheService.getUserCache();
+    const key = 'deverr_' + hash_(run.fn + '|' + message);
+    if (cache && cache.get(key)) {
+      log_(run, 'dev_email_skipped', { reason: 'same error emailed in the last 10 minutes' });
+      return;
+    }
+    const f = run.context.file;
+    const body = [
+      'An unexpected error happened in Invoice PDF Generator.',
+      '',
+      'Run id:        ' + run.id,
+      'User:          ' + (run.user || '(unknown)'),
+      'Time:          ' + new Date().toISOString(),
+      'Function:      ' + run.fn,
+      'Stage reached: ' + run.stage,
+      'File:          ' + (f ? f.name + ' (' + f.sizeBytes + ' bytes)' : '(none)'),
+      '',
+      'Error: ' + message,
+      '',
+      String((e && e.stack) || '(no stack trace)'),
+      '',
+      'Search the logs (Apps Script → Executions) for runId "' + run.id + '" to see every step of this run.',
+    ].join('\n');
+    MailApp.sendEmail({
+      to: to,
+      subject: '[Invoice PDF Generator] Error in ' + run.fn + ' (run ' + run.id + ')',
+      body: body,
+      name: senderName_(),
+    });
+    if (cache) cache.put(key, '1', DEV_EMAIL_REPEAT_SECONDS);
+    log_(run, 'dev_email_sent', { to: to });
+  } catch (err) {
+    log_(run, 'dev_email_failed', { message: (err && err.message) || String(err) }, 'warn');
+  }
+}
+
+/**
+ * Run metrics for BigQuery: one row per client per Generate run,
+ * [runId, user, clientId, invoiceCount, runTimeMs]. No timestamp (the
+ * developer's library adds it). Logged, then handed to sendRunMetrics_ (Config.gs).
+ */
+function buildRunMetrics_(run, invoices) {
+  const runTimeMs = Math.round(Date.now() - run.started);
+  const order = [], counts = {};
+  invoices.forEach(inv => {
+    const id = cleanText_(inv.clientNumber);
+    if (!(id in counts)) { counts[id] = 0; order.push(id); }
+    counts[id]++;
+  });
+  return order.map(id => [run.id, run.user, id, counts[id], runTimeMs]);
+}
+
+function recordRunMetrics_(run, invoices) {
+  try {
+    const rows = buildRunMetrics_(run, invoices);
+    log_(run, 'run_metrics', { rows: rows });
+    if (typeof sendRunMetrics_ === 'function') sendRunMetrics_(rows);
+    return rows;
+  } catch (e) {
+    log_(run, 'metrics_failed', { message: (e && e.message) || String(e) }, 'warn');
+    return [];
+  }
+}
+
+function senderName_() {
+  return cleanText_(cfg_().EMAIL_SENDER_NAME) || 'Invoice PDF Generator (no reply)';
+}
+
+/** Small, stable string hash for cache keys. */
+function hash_(s) {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+// ---------------------------------------------------------------------------
 // Developer settings (Config.gs): logo, company block, footer, accent colour
 // ---------------------------------------------------------------------------
 
@@ -776,39 +954,42 @@ const cleanText_ = v => String(v == null ? '' : v).trim();
 const cleanList_ = a => (Array.isArray(a) ? a : []).map(cleanText_).filter(Boolean);
 /** A French value, or the English one when the French one is blank. */
 const pickText_ = (fr, en) => cleanText_(fr) || cleanText_(en);
-const pickList_ = (fr, en) => cleanList_(fr).length ? cleanList_(fr) : cleanList_(en);
 
 /**
  * Logo, company block, footer and accent colour for one invoice language.
+ * The company and bank details are the same in both languages; only the labels
+ * (and the two footer sentences) follow the language.
  * Returns { logo, company: { address, phone, gov }, footer, accent, warnings }.
  */
 function loadBranding_(lang) {
   const c = cfg_();
-  const L = I18N[lang];
-  const fr = lang === 'fr';
-  const coEn = (c.COMPANY && c.COMPANY.en) || {};
-  const co = fr ? ((c.COMPANY && c.COMPANY.fr) || {}) : coEn;
+  const L = I18N[lang] || I18N.en;
+  const co = c.COMPANY || {};
   const nums = c.GOVERNMENT_NUMBERS || {};
-  const ftEn = (c.FOOTER && c.FOOTER.en) || {};
-  const ft = fr ? ((c.FOOTER && c.FOOTER.fr) || {}) : ftEn;
-  const pairs = a => (Array.isArray(a) ? a : [])
-    .map(p => [cleanText_(p && p[0]), cleanText_(p && p[1])]).filter(p => p[0] || p[1]);
+  const bank = c.BANK || {};
+  const textEn = (c.FOOTER_TEXT && c.FOOTER_TEXT.en) || {};
+  const text = lang === 'fr' ? ((c.FOOTER_TEXT && c.FOOTER_TEXT.fr) || {}) : textEn;
+  const FL = L.footerLabels;
   const logo = loadLogo_();
+  const bankDetails = [['bankId', FL.bankId], ['transit', FL.transit], ['account', FL.account]]
+    .map(k => [k[1], cleanText_(bank[k[0]])]).filter(p => p[1]);
+  const bankAddress = cleanList_(bank.address);
   return {
     logo: logo.dataUri,
     accent: accent_(),
     company: {
-      address: fr ? pickList_(co.address, coEn.address) : cleanList_(coEn.address),
-      phone: fr ? pickText_(co.phone, coEn.phone) : cleanText_(coEn.phone),
+      address: cleanList_(co.address),
+      phone: cleanText_(co.phone),
       gov: L.gov.map(g => cleanText_(nums[g[0]]) ? g[1] + cleanText_(nums[g[0]]) : '').filter(Boolean),
     },
     footer: {
-      paymentTitle: fr ? pickText_(ft.paymentTitle, ftEn.paymentTitle) : cleanText_(ftEn.paymentTitle),
-      bankAddress: fr ? pickList_(ft.bankAddress, ftEn.bankAddress) : cleanList_(ftEn.bankAddress),
-      bankDetails: fr && pairs(ft.bankDetails).length ? pairs(ft.bankDetails) : pairs(ftEn.bankDetails),
-      remittance: fr ? pickText_(ft.remittance, ftEn.remittance) : cleanText_(ftEn.remittance),
-      disclosure: fr ? pickText_(ft.disclosure, ftEn.disclosure) : cleanText_(ftEn.disclosure),
+      paymentTitle: bankAddress.length || bankDetails.length ? FL.paymentTitle : '',
+      bankAddress: bankAddress,
+      bankDetails: bankDetails,
+      remittance: lang === 'fr' ? pickText_(text.remittance, textEn.remittance) : cleanText_(textEn.remittance),
+      disclosure: lang === 'fr' ? pickText_(text.disclosure, textEn.disclosure) : cleanText_(textEn.disclosure),
     },
+    footerAtBottom: c.FOOTER_AT_PAGE_BOTTOM !== false,
     warnings: logo.warning ? [logo.warning] : [],
   };
 }
@@ -936,11 +1117,11 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
 }
 
 /** Reads the spreadsheet, rebuilds the PDFs in the job folder, and records the file IDs. */
-function renderFromSpreadsheet_(ss) {
+function renderFromSpreadsheet_(ss, run) {
   const meta = readMeta_(ss);
   const items = sheetById_(ss, meta.itemsSheetId) || ss.getSheets()[0];
   const settingsSheet = sheetById_(ss, meta.settingsSheetId) || ss.getSheets()[1];
-  if (!items || !settingsSheet) throw new Error('The spreadsheet is missing its Invoices or Settings tab.');
+  if (!items || !settingsSheet) throw userError_('The spreadsheet is missing its Invoices or Settings tab.');
 
   const raw = {};
   settingsSheet.getDataRange().getValues().forEach(r => {
@@ -965,7 +1146,7 @@ function renderFromSpreadsheet_(ss) {
   const grouped = groupInvoices_(body, Object.assign({}, SHEET_MAP, { details: details, groupBy: groupBy }), opts,
     body.map((_, i) => i + 2));
   if (!grouped.invoices.length) {
-    throw new Error('No invoices were found in the spreadsheet' +
+    throw userError_('No invoices were found in the spreadsheet' +
       (grouped.skipped.length ? ' — first problem: row ' + grouped.skipped[0].row + ': ' + grouped.skipped[0].reason : '.'));
   }
 
@@ -973,10 +1154,12 @@ function renderFromSpreadsheet_(ss) {
   try {
     folder = DriveApp.getFolderById(meta.folderId);
   } catch (e) {
-    throw new Error('The Drive folder for this spreadsheet no longer exists or you do not have access to it.');
+    throw userError_('The Drive folder for this spreadsheet no longer exists or you do not have access to it.');
   }
   const branding = loadBranding_(opts.language);
+  const t0 = Date.now();
   const output = writePdfs_(grouped.invoices, opts, L, folder, meta, branding);
+  if (run) log_(run, 'pdfs_written', { invoices: grouped.invoices.length, files: output.invoices.length, ms: Date.now() - t0 });
   meta.lastBuilt = new Date().toISOString();
   writeMeta_(ss, meta);
   return { output: output, skipped: grouped.skipped, notes: grouped.notes, warnings: branding.warnings,
@@ -1084,9 +1267,10 @@ function invoiceSummary_(inv, url) {
 
 function sendResultEmail_(to, built, ss, updated) {
   if (MailApp.getRemainingDailyQuota() < 1) {
-    throw new Error('the daily email limit has been reached. Use the links on this page instead.');
+    throw userError_('the daily email limit has been reached. Use the links on this page instead.');
   }
-  const E = built.L.email, output = built.output, folder = built.folder;
+  const E = I18N.en.email; // emails are always in English, whatever the invoice language
+  const output = built.output, folder = built.folder;
   const accent = accent_();
   const sourceName = String(built.meta.sourceName || '');
   const n = output.invoices.length;
@@ -1131,6 +1315,7 @@ function sendResultEmail_(to, built, ss, updated) {
       '<p style="margin-top:20px">' + rebuildHtml + '</p>' +
       '<p style="color:#888;font-size:12px;margin-top:24px">' + esc_(E.reference) + ': ' + esc_(built.meta.jobId) +
         ' · ' + esc_(E.footer) + '</p>' +
+      '<p style="color:#888;font-size:12px">' + esc_(E.noReply) + '</p>' +
     '</div>';
 
   const plainLinks = (output.combinedUrl ? [E.openPdf + ': ' + output.combinedUrl] : output.invoices.map(i => i.number + ': ' + i.url))
@@ -1142,8 +1327,9 @@ function sendResultEmail_(to, built, ss, updated) {
     to: to,
     subject: subject,
     htmlBody: htmlBody,
-    body: E.intro(n, sourceName).replace(/<[^>]+>/g, '') + '\n\n' + plainLinks.join('\n'),
-    name: 'Invoice PDF Generator',
+    body: E.intro(n, sourceName).replace(/<[^>]+>/g, '') + '\n\n' + plainLinks.join('\n') +
+      '\n\n' + E.reference + ': ' + built.meta.jobId + '\n' + E.noReply,
+    name: senderName_(),
   });
 }
 
@@ -1158,7 +1344,7 @@ function sendResultEmail_(to, built, ss, updated) {
  * Rows hidden in Excel (by a filter or by hand) are left out.
  */
 function readRows_(file, jobId) {
-  if (!file || !file.base64) throw new Error('Please choose a CSV or XLSX file first.');
+  if (!file || !file.base64) throw userError_('Please choose a CSV or XLSX file first.');
   const name = String(file.name || '').toLowerCase();
   const bytes = Utilities.base64Decode(file.base64);
 
@@ -1167,7 +1353,7 @@ function readRows_(file, jobId) {
     const delimiter = detectDelimiter_(text);
     const rows = Utilities.parseCsv(text, delimiter);
     // Excel in French (and most European locales) saves ";"-separated CSVs with decimal commas.
-    return { rows: rows, rowNumbers: rows.map((_, i) => i + 1), decimalComma: delimiter === ';', notes: [] };
+    return { rows: rows, rowNumbers: rows.map((_, i) => i + 1), decimalComma: delimiter === ';', notes: [], hiddenRows: 0 };
   }
 
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
@@ -1199,13 +1385,13 @@ function readRows_(file, jobId) {
         notes.unshift(hiddenCount + ' hidden row' + (hiddenCount === 1 ? '' : 's') +
           ' in the Excel file (hidden by a filter or by hand) ' + (hiddenCount === 1 ? 'was' : 'were') + ' not invoiced.');
       }
-      return { rows: rows, rowNumbers: rowNumbers, decimalComma: false, notes: notes };
+      return { rows: rows, rowNumbers: rowNumbers, decimalComma: false, notes: notes, hiddenRows: hiddenCount };
     } finally {
       DriveApp.getFileById(temp.id).setTrashed(true);
     }
   }
 
-  throw new Error('Unsupported file type. Please upload a .csv or .xlsx file.');
+  throw userError_('Unsupported file type. Please upload a .csv or .xlsx file.');
 }
 
 /**
@@ -1303,7 +1489,7 @@ function normalizeMapping_(raw) {
     const index = toIndex(gLetters, 'Group line items by');
     if (index != null) mapping.groupBy = { index: index, label: String(g.label || '').trim().slice(0, 60) };
   }
-  if (errors.length) throw new Error(errors.join(' '));
+  if (errors.length) throw userError_(errors.join(' '));
   return mapping;
 }
 
@@ -1321,8 +1507,8 @@ function normalizeLayoutOptions_(o) {
   const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
   return {
     language: str(o.language, 5).toLowerCase() === 'fr' ? 'fr' : 'en',
-    // Same default as the web form: one combined PDF unless "separate" is chosen.
-    outputMode: str(o.outputMode, 20).toLowerCase() === 'separate' ? 'separate' : 'combined',
+    // Same default as the web form: one PDF per invoice unless "combined" is chosen.
+    outputMode: str(o.outputMode, 20).toLowerCase() === 'combined' ? 'combined' : 'separate',
     combineEmployees: o.combineEmployees === true || /^(yes|oui|true|1|y|o)$/i.test(str(o.combineEmployees, 5)),
   };
 }
@@ -1586,14 +1772,15 @@ function formatDateSpan_(dates) {
 function invoicesHtml_(invoices, opts, L, branding) {
   const pages = [];
   invoices.forEach(inv => { invoicePages_(inv, opts, L, branding).forEach(p => pages.push(p)); });
-  const bottom = cleanText_(cfg_().PAGE_NUMBER_POSITION).toLowerCase() !== 'top';
   const html = pages.map((p, i) => {
     const brk = i < pages.length - 1 ? 'page-break-after:always;' : '';
-    const num = '<tr><td class="pn" style="height:' + PAGE.NUMBER_ROW + 'pt">' + esc_(p.number) + '</td></tr>';
+    // Page number top-right; content takes the spare height, so a footer row
+    // (last page only) sits at the bottom. If a converter ignores the fixed
+    // height, the footer simply follows the content.
     return '<table class="page" style="height:' + PAGE.HEIGHT + 'pt;' + brk + '">' +
-      (bottom ? '' : num) +
-      '<tr><td class="page-content">' + p.content + '</td></tr>' +
-      (bottom ? num : '') +
+      '<tr><td class="pn" style="height:' + PAGE.NUMBER_ROW + 'pt">' + esc_(p.number) + '</td></tr>' +
+      '<tr><td class="page-content" style="height:100%">' + p.content + '</td></tr>' +
+      (p.footer ? '<tr><td class="page-footer">' + p.footer + '</td></tr>' : '') +
       '</table>';
   });
   return wrapHtml_(html, branding.accent);
@@ -1601,113 +1788,126 @@ function invoicesHtml_(invoices, opts, L, branding) {
 
 function wrapHtml_(pages, accent) {
   const a = accent || DEFAULT_ACCENT;
+  const wrap = 'overflow-wrap:anywhere;word-wrap:break-word;word-break:break-word;';
   const css =
     '@page{size:letter portrait;margin:0.5in;}' +
     'body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:9pt;margin:0;}' +
     'table{border-collapse:collapse;width:100%;}' +
     'td,th{vertical-align:top;padding:0;}' +
     '.page-content{vertical-align:top;}' +
-    '.pn{text-align:right;vertical-align:bottom;font-size:8pt;color:#777;}' +
-    '.hdr-details td{padding:1.5pt 0 1.5pt 12pt;font-size:9pt;white-space:nowrap;}' +
-    '.hdr-details td.lbl{color:#666;text-align:right;}' +
-    '.hdr-details td.val{text-align:right;font-weight:bold;}' +
+    '.page-footer{vertical-align:bottom;}' +
+    '.pn{text-align:right;vertical-align:top;font-size:8pt;color:#777;}' +
+    '.hdr-details td{padding:1.5pt 0 1.5pt 12pt;font-size:9pt;}' +
+    '.hdr-details td.lbl{color:#666;text-align:right;white-space:nowrap;}' +
+    '.hdr-details td.val{text-align:right;font-weight:bold;' + wrap + '}' +
     '.name{font-weight:bold;color:' + a + ';font-size:10.5pt;}' +
-    '.block div{line-height:12pt;}' +
+    '.block div{line-height:12pt;' + wrap + '}' +
     '.company{text-align:right;}' +
     '.gov{font-size:8pt;color:#666;}' +
     '.confidential{font-weight:bold;letter-spacing:1pt;font-size:9pt;padding-top:10pt;}' +
-    '.items{margin-top:10pt;table-layout:fixed;}' +
-    '.items th{background:' + a + ';color:#fff;padding:5pt 4pt;font-size:8pt;text-align:left;font-weight:bold;}' +
+    '.items{margin-top:' + PAGE.GAP_HEADER_BODY + 'pt;table-layout:fixed;}' +
+    '.items th{background:' + a + ';color:#fff;padding:5pt 4pt;font-size:8pt;text-align:left;font-weight:bold;' + wrap + '}' +
     '.items th.num,.items td.num{text-align:right;}' +
-    '.items td{padding:4pt;border-bottom:0.5pt solid #ddd;font-size:8.5pt;word-wrap:break-word;}' +
+    '.items td{padding:4pt;border-bottom:0.5pt solid #ddd;font-size:8.5pt;' + wrap + '}' +
+    '.items td.num{white-space:nowrap;}' +
     '.items tr.alt td{background:#f5f6f8;}' +
     '.items tr.grp td{background:' + tint_(a, 0.86) + ';border-left:3pt solid ' + a + ';color:' + a +
       ';font-weight:bold;padding:4pt 6pt;font-size:8.5pt;}' +
     '.detail{font-size:7.5pt;color:#555;padding-left:8pt;line-height:10pt;}' +
     '.section{font-size:8pt;font-weight:bold;color:' + a + ';text-transform:uppercase;letter-spacing:0.6pt;margin-bottom:3pt;}' +
-    '.units th{text-align:left;font-size:8pt;color:#666;font-weight:normal;border-bottom:0.5pt solid #ccc;padding:2pt 6pt 2pt 0;}' +
+    '.units th{text-align:left;font-size:8pt;color:#666;font-weight:normal;border-bottom:0.5pt solid #ccc;padding:2pt 10pt 2pt 0;}' +
     '.units th.num,.units td.num{text-align:right;}' +
-    '.units td{padding:2pt 6pt 2pt 0;font-size:9pt;}' +
+    '.units td{padding:2pt 10pt 2pt 0;font-size:9pt;' + wrap + '}' +
+    '.units tr.total td{font-weight:bold;border-top:0.75pt solid #999;padding-top:3pt;}' +
     '.totals td{padding:3pt 0 3pt 8pt;font-size:9.5pt;}' +
     '.totals td.num{text-align:right;white-space:nowrap;}' +
     '.totals tr.grand td{font-weight:bold;font-size:11pt;border-top:1.5pt solid ' + a + ';padding-top:5pt;}' +
-    '.footer{margin-top:16pt;border-top:1pt solid ' + a + ';padding-top:8pt;font-size:8.5pt;}' +
-    '.footer td{line-height:11pt;}' +
+    '.footer{margin-top:' + PAGE.GAP_SUMMARY_FOOTER + 'pt;border-top:1pt solid ' + a + ';padding-top:8pt;font-size:8.5pt;}' +
+    '.footer td{line-height:11pt;' + wrap + '}' +
     '.footer .pay{font-weight:bold;}' +
-    '.footer .bank td{padding:0 0 0 8pt;white-space:nowrap;}' +
-    '.footer .bank td.lbl{text-align:right;color:#666;}' +
+    '.footer .bank td{padding:0 0 0 8pt;}' +
+    '.footer .bank td.lbl{text-align:right;color:#666;white-space:nowrap;}' +
     '.footer .bank td.val{text-align:right;}' +
-    '.remit{margin-top:8pt;}' +
-    '.disclosure{font-size:7.5pt;color:#666;text-align:justify;margin-top:6pt;line-height:10pt;}';
+    '.remit{margin-top:8pt;' + wrap + '}' +
+    '.disclosure{font-size:7.5pt;color:#666;text-align:justify;margin-top:6pt;line-height:10pt;' + wrap + '}';
   return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' + css + '</style></head><body>' +
     pages.join('') + '</body></html>';
 }
 
-/** Splits one invoice into pages: [{ content, number }]. */
+/**
+ * Splits one invoice into pages: [{ content, footer, number }]. The footer
+ * (bank details, remittance, disclosure) is only on the last page: in its own
+ * bottom row when FOOTER_AT_PAGE_BOTTOM is on, otherwise right after the totals.
+ */
 function invoicePages_(inv, opts, L, branding) {
   const pages = paginateInvoice_(inv, branding);
+  const footer = footerHtml_(branding.footer);
   return pages.map((rows, p) => {
     const last = p === pages.length - 1;
     const content = (p === 0 ? headerHtml_(inv, L, branding) : condensedHeaderHtml_(inv, L, branding)) +
       itemsTableHtml_(rows, inv, L) +
-      (last ? summaryTotalsHtml_(inv, L) + footerHtml_(branding.footer) : '');
-    return { content: content, number: L.page(p + 1, pages.length) };
+      (last ? summaryTotalsHtml_(inv, L) + (branding.footerAtBottom ? '' : footer) : '');
+    return { content: content, footer: last && branding.footerAtBottom ? footer : '', number: L.page(p + 1, pages.length) };
   });
 }
 
+const textLines_ = (s, per) => Math.max(1, Math.ceil(String(s || '').length / per));
+
 /** Estimated height (pt) of one line row. */
 function lineHeight_(ln, labels) {
-  const chars = (s, per) => Math.max(1, Math.ceil(String(s || '').length / per));
   // The first column stacks the name and the extra-detail lines; the other
   // columns sit beside it, so the row is as tall as the tallest column.
   let detailLines = 0;
   labels.forEach((label, d) => {
-    if (ln.details[d] && ln.details[d].length) detailLines += chars(label + ': ' + ln.details[d].join(', '), 34);
+    if (ln.details[d] && ln.details[d].length) detailLines += textLines_(label + ': ' + ln.details[d].join(', '), 32);
   });
-  const first = chars(ln.candidate, 24) * PAGE.TEXT_LINE + detailLines * PAGE.DETAIL_LINE;
-  const others = Math.max(chars(ln.workOrder, 11), chars(ln.purchaseOrder, 11),
-    chars(formatDateSpan_(ln.dates), 16), chars(ln.lineType, 9)) * PAGE.TEXT_LINE;
+  const first = textLines_(ln.candidate, 23) * PAGE.TEXT_LINE + detailLines * PAGE.DETAIL_LINE;
+  const others = Math.max(textLines_(ln.workOrder, 11), textLines_(ln.purchaseOrder, 11),
+    textLines_(formatDateSpan_(ln.dates), 15), textLines_(ln.lineType, 9)) * PAGE.TEXT_LINE;
   return PAGE.LINE_PAD + Math.max(first, others);
 }
 
 /** Estimated height (pt) of the full header on page 1. */
 function fullHeaderHeight_(inv, branding) {
-  const clientLines = 1 + (inv.attention ? 1 : 0) + formatClientAddress_(inv.address).length;
-  const companyLines = branding.company.address.length + (branding.company.phone ? 1 : 0) + branding.company.gov.length;
-  return 62 + 10 + Math.max(clientLines, companyLines) * 12 + 24;
+  const block = lines => lines.reduce((n, s) => n + textLines_(s, 44), 0);
+  const clientLines = textLines_(inv.customerName, 38) + (inv.attention ? textLines_('ATTN: ' + inv.attention, 44) : 0) +
+    block(formatClientAddress_(inv.address));
+  const companyLines = block(branding.company.address) + (branding.company.phone ? 1 : 0) + branding.company.gov.length;
+  const details = [inv.number, inv.clientNumber].reduce((n, v) => n + textLines_(v, 22), 0) + 2;
+  return Math.max(62, details * 13 + 10) + 10 + Math.max(clientLines, companyLines) * 12 + 24;
 }
 
 /** Estimated height (pt) of the units summary, totals and footer on the last page. */
 function tailHeight_(inv, branding) {
   const f = branding.footer;
-  const summary = 14 + Math.max(2 + inv.unitsSummary.length, 2 + inv.taxes.length) * 13 + 6;
+  const summary = PAGE.GAP_BODY_SUMMARY + Math.max(3 + inv.unitsSummary.length, 2 + inv.taxes.length) * 13 + 6;
   const hasFooter = f.paymentTitle || f.bankAddress.length || f.bankDetails.length || f.remittance || f.disclosure;
   const footer = hasFooter
-    ? 24 + Math.max(1 + f.bankAddress.length, f.bankDetails.length) * 11 + (f.remittance ? 19 : 0) +
-      Math.ceil(String(f.disclosure || '').length / 130) * 10 + 6
+    ? PAGE.GAP_SUMMARY_FOOTER + 8 + Math.max(1 + f.bankAddress.length, f.bankDetails.length) * 11 +
+      (f.remittance ? 8 + textLines_(f.remittance, 120) * 11 : 0) + textLines_(f.disclosure, 130) * 10 + 6
     : 0;
   return summary + footer;
 }
 
 /**
- * Splits an invoice's rows into pages. Each page gets: header (full on page 1,
- * condensed after), column headings, as many rows as fit. The last page must
- * also fit the summary, totals and footer. Group headings stay with their next
- * line, and repeat with "(continued)" on the next page.
+ * Splits an invoice's rows into pages. Each page gets: page number, header (full
+ * on page 1, condensed after), column headings, as many rows as fit. The last
+ * page must also fit the summary, totals and footer. Group headings stay with
+ * their next line, and repeat with "(continued)" on the next page.
  * Returns [[row, ...], ...] where row = { type: 'group'|'line', ... }.
  */
 function paginateInvoice_(inv, branding) {
   const labels = inv.detailLabels || [];
   const rows = [];
   inv.groups.forEach(g => {
-    if (g.value) rows.push({ type: 'group', group: g, continued: false, h: PAGE.GROUP_ROW });
+    if (g.value) rows.push({ type: 'group', group: g, continued: false, h: groupRowHeight_(inv, g) });
     g.lines.forEach(ln => rows.push({ type: 'line', line: ln, group: g, h: lineHeight_(ln, labels) }));
   });
   const fullHeader = fullHeaderHeight_(inv, branding);
-  const budget = p => PAGE.HEIGHT - PAGE.NUMBER_ROW - PAGE.COL_HEADER - PAGE.SAFETY -
+  const budget = p => PAGE.HEIGHT - PAGE.NUMBER_ROW - PAGE.GAP_HEADER_BODY - PAGE.COL_HEADER - PAGE.SAFETY -
     (p === 0 ? fullHeader : PAGE.CONDENSED_HEADER);
   const tail = tailHeight_(inv, branding);
-  const continued = g => ({ type: 'group', group: g, continued: true, h: PAGE.GROUP_ROW });
+  const continued = g => ({ type: 'group', group: g, continued: true, h: groupRowHeight_(inv, g) });
 
   const pages = [{ rows: [], used: 0 }];
   rows.forEach((r, i) => {
@@ -1744,11 +1944,34 @@ function paginateInvoice_(inv, branding) {
   return pages.map(p => p.rows);
 }
 
+function groupRowHeight_(inv, g) {
+  return PAGE.GROUP_ROW + (textLines_(inv.groupLabel + ': ' + g.value + ' (continued)', 100) - 1) * PAGE.TEXT_LINE;
+}
+
+/**
+ * Escaped text with invisible break points (<wbr>) inside long unbroken words,
+ * so long codes and names wrap inside their cell instead of overflowing.
+ * Words of 14 characters or fewer (dates, amounts, most codes) are untouched.
+ */
+function softText_(s) {
+  return String(s == null ? '' : s).split(/(\s+)/).map(word => {
+    if (/^\s+$/.test(word) || word.length <= 14) return esc_(word);
+    let out = '', run = 0;
+    for (let i = 0; i < word.length; i++) {
+      const ch = word[i];
+      out += esc_(ch);
+      run++;
+      if (i < word.length - 1 && ('-/_.@,'.indexOf(ch) !== -1 || run >= 12)) { out += '<wbr>'; run = 0; }
+    }
+    return out;
+  }).join('');
+}
+
 function headerDetailsHtml_(inv, L) {
   const vals = [inv.number, inv.clientNumber, formatDate_(inv.invoiceDate), formatDate_(inv.dueDate)];
   return '<table class="hdr-details" style="width:auto;margin-left:auto">' +
     L.headerLabels.map((label, i) =>
-      '<tr><td class="lbl">' + esc_(label) + '</td><td class="val">' + esc_(vals[i] || '') + '</td></tr>').join('') +
+      '<tr><td class="lbl">' + esc_(label) + '</td><td class="val" style="max-width:150pt">' + softText_(vals[i] || '') + '</td></tr>').join('') +
     '</table>';
 }
 
@@ -1758,18 +1981,18 @@ function logoHtml_(branding, heightPt) {
 
 /** Full header (page 1): logo + invoice details, client block + company block, confidentiality phrase. */
 function headerHtml_(inv, L, branding) {
-  const lines = arr => arr.map(s => '<div>' + esc_(s).replace(/ {2}/g, ' &nbsp;') + '</div>').join('');
-  const client = '<div class="name">' + esc_(inv.customerName || '') + '</div>' +
-    (inv.attention ? '<div>' + esc_(L.attn) + ' ' + esc_(inv.attention) + '</div>' : '') +
+  const lines = arr => arr.map(s => '<div>' + softText_(s).replace(/ {2}/g, ' &nbsp;') + '</div>').join('');
+  const client = '<div class="name">' + softText_(inv.customerName || '') + '</div>' +
+    (inv.attention ? '<div>' + esc_(L.attn) + ' ' + softText_(inv.attention) + '</div>' : '') +
     lines(formatClientAddress_(inv.address));
   const co = branding.company;
-  const company = (co.address.length ? '<div class="name">' + esc_(co.address[0]) + '</div>' + lines(co.address.slice(1)) : '') +
+  const company = (co.address.length ? '<div class="name">' + softText_(co.address[0]) + '</div>' + lines(co.address.slice(1)) : '') +
     (co.phone ? '<div>' + esc_(L.phonePrefix + co.phone) + '</div>' : '') +
-    co.gov.map(g => '<div class="gov">' + esc_(g) + '</div>').join('');
+    co.gov.map(g => '<div class="gov">' + softText_(g) + '</div>').join('');
   return '<table class="hdr">' +
     '<tr><td style="width:50%;height:58pt">' + logoHtml_(branding, 54) + '</td>' +
       '<td style="width:50%">' + headerDetailsHtml_(inv, L) + '</td></tr>' +
-    '<tr><td class="block" style="padding-top:10pt">' + client + '</td>' +
+    '<tr><td class="block" style="padding-top:10pt;padding-right:12pt">' + client + '</td>' +
       '<td class="block company" style="padding-top:10pt">' + company + '</td></tr>' +
     '<tr><td colspan="2" class="confidential">' + esc_(L.confidential) + '</td></tr>' +
     '</table>';
@@ -1778,36 +2001,36 @@ function headerHtml_(inv, L, branding) {
 /** Condensed header (pages 2+): small logo + invoice details, client name. */
 function condensedHeaderHtml_(inv, L, branding) {
   return '<table class="hdr">' +
-    '<tr><td style="width:50%">' + logoHtml_(branding, 32) +
-      '<div class="name" style="margin-top:4pt">' + esc_(inv.customerName || '') + '</div></td>' +
+    '<tr><td class="block" style="width:50%">' + logoHtml_(branding, 32) +
+      '<div class="name" style="margin-top:4pt">' + softText_(inv.customerName || '') + '</div></td>' +
       '<td style="width:50%">' + headerDetailsHtml_(inv, L) + '</td></tr>' +
     '</table>';
 }
 
 /** The 8-column body table for one page's rows. */
+const COLUMN_WIDTHS = [21, 11, 11, 14, 10, 8, 11, 14];
 function itemsTableHtml_(rows, inv, L) {
-  const widths = [22, 11, 11, 15, 10, 8, 10, 13];
   const num = [false, false, false, false, false, true, true, true];
   const head = '<tr>' + L.columns.map((c, i) =>
-    '<th' + (num[i] ? ' class="num"' : '') + ' style="width:' + widths[i] + '%">' + esc_(c) + '</th>').join('') + '</tr>';
+    '<th' + (num[i] ? ' class="num"' : '') + ' style="width:' + COLUMN_WIDTHS[i] + '%">' + esc_(c) + '</th>').join('') + '</tr>';
   const labels = inv.detailLabels || [];
-  const nl2br = s => esc_(s).replace(/\r?\n/g, '<br>');
+  const multi = s => s.split(/\r?\n/).map(softText_).join('<br>');
   let stripe = 0;
   const body = rows.map(r => {
     if (r.type === 'group') {
       stripe = 0;
-      return '<tr class="grp"><td colspan="8">' + esc_(inv.groupLabel) + ': ' + esc_(r.group.value) +
+      return '<tr class="grp"><td colspan="8">' + softText_(inv.groupLabel) + ': ' + softText_(r.group.value) +
         (r.continued ? ' ' + esc_(L.continued) : '') + '</td></tr>';
     }
     const ln = r.line;
     const details = labels.map((label, d) => ln.details[d] && ln.details[d].length
-      ? '<div class="detail">' + esc_(label) + ': ' + nl2br(ln.details[d].join(', ')) + '</div>' : '').join('');
+      ? '<div class="detail">' + softText_(label) + ': ' + multi(ln.details[d].join(', ')) + '</div>' : '').join('');
     return '<tr' + (stripe++ % 2 ? ' class="alt"' : '') + '>' +
-      '<td>' + nl2br(ln.candidate) + details + '</td>' +
-      '<td>' + esc_(ln.workOrder) + '</td>' +
-      '<td>' + esc_(ln.purchaseOrder) + '</td>' +
-      '<td>' + esc_(formatDateSpan_(ln.dates)) + '</td>' +
-      '<td>' + esc_(ln.lineType) + '</td>' +
+      '<td>' + multi(ln.candidate) + details + '</td>' +
+      '<td>' + softText_(ln.workOrder) + '</td>' +
+      '<td>' + softText_(ln.purchaseOrder) + '</td>' +
+      '<td>' + softText_(formatDateSpan_(ln.dates)) + '</td>' +
+      '<td>' + softText_(ln.lineType) + '</td>' +
       '<td class="num">' + formatQty_(ln.quantity) + '</td>' +
       '<td class="num">' + esc_(formatMoney_(ln.unitPrice)) + '</td>' +
       '<td class="num">' + esc_(formatMoney_(ln.amount)) + '</td>' +
@@ -1816,12 +2039,14 @@ function itemsTableHtml_(rows, inv, L) {
   return '<table class="items">' + head + body + '</table>';
 }
 
-/** Units summary (left) and subtotal / taxes / total (right). */
+/** Units summary with a total (left) and subtotal / taxes / total (right). */
 function summaryTotalsHtml_(inv, L) {
+  const totalUnits = Math.round(inv.unitsSummary.reduce((n, r) => n + r.units, 0) * 1000) / 1000;
   const units = '<div class="section">' + esc_(L.summaryTitle) + '</div>' +
     '<table class="units" style="width:auto"><tr><th>' + esc_(L.summaryCols[0]) + '</th><th class="num">' +
     esc_(L.summaryCols[1]) + '</th></tr>' +
-    inv.unitsSummary.map(r => '<tr><td>' + esc_(r.type) + '</td><td class="num">' + formatQty_(r.units) + '</td></tr>').join('') +
+    inv.unitsSummary.map(r => '<tr><td>' + softText_(r.type) + '</td><td class="num">' + formatQty_(r.units) + '</td></tr>').join('') +
+    '<tr class="total"><td>' + esc_(L.unitsTotal) + '</td><td class="num">' + formatQty_(totalUnits) + '</td></tr>' +
     '</table>';
   const taxRows = inv.taxes.map(t =>
     '<tr><td>' + esc_(L.taxes[t.key] + (t.ratePct == null ? '' : ' (' + formatQty_(t.ratePct) + '%)')) +
@@ -1831,10 +2056,10 @@ function summaryTotalsHtml_(inv, L) {
     taxRows +
     '<tr class="grand"><td>' + esc_(L.total) + '</td><td class="num">' + esc_(formatMoney_(inv.total)) + '</td></tr>' +
     '</table>';
-  return '<table style="margin-top:14pt"><tr>' +
+  return '<table class="summary" style="margin-top:' + PAGE.GAP_BODY_SUMMARY + 'pt"><tr>' +
     '<td style="width:50%">' + units + '</td>' +
-    '<td style="width:15%"></td>' +
-    '<td style="width:35%">' + totals + '</td>' +
+    '<td style="width:12%"></td>' +
+    '<td style="width:38%">' + totals + '</td>' +
     '</tr></table>';
 }
 
@@ -1842,16 +2067,16 @@ function summaryTotalsHtml_(inv, L) {
 function footerHtml_(f) {
   if (!f || !(f.paymentTitle || f.bankAddress.length || f.bankDetails.length || f.remittance || f.disclosure)) return '';
   const left = (f.paymentTitle ? '<div class="pay">' + esc_(f.paymentTitle) + '</div>' : '') +
-    f.bankAddress.map(s => '<div>' + esc_(s) + '</div>').join('');
+    f.bankAddress.map(s => '<div>' + softText_(s) + '</div>').join('');
   const right = f.bankDetails.length
     ? '<table class="bank" style="width:auto;margin-left:auto">' + f.bankDetails.map(p =>
-        '<tr><td class="lbl">' + esc_(p[0]) + (p[0] ? ':' : '') + '</td><td class="val">' + esc_(p[1]) + '</td></tr>').join('') +
+        '<tr><td class="lbl">' + esc_(p[0]) + (p[0] ? ':' : '') + '</td><td class="val">' + softText_(p[1]) + '</td></tr>').join('') +
       '</table>'
     : '';
   return '<div class="footer" style="page-break-inside:avoid">' +
     '<table><tr><td style="width:55%">' + left + '</td><td style="width:45%">' + right + '</td></tr></table>' +
-    (f.remittance ? '<div class="remit">' + esc_(f.remittance) + '</div>' : '') +
-    (f.disclosure ? '<div class="disclosure">' + esc_(f.disclosure) + '</div>' : '') +
+    (f.remittance ? '<div class="remit">' + softText_(f.remittance) + '</div>' : '') +
+    (f.disclosure ? '<div class="disclosure">' + softText_(f.disclosure) + '</div>' : '') +
     '</div>';
 }
 
@@ -1959,7 +2184,7 @@ function claimSpreadsheet_(ss) {
   try {
     const meta = readMeta_(ss);
     if (Number(meta.busyUntil) > Date.now()) {
-      throw new Error('This spreadsheet is already being rebuilt (in another tab or by another person). Please try again in a minute.');
+      throw userError_('This spreadsheet is already being rebuilt (in another tab or by another person). Please try again in a minute.');
     }
     meta.busyUntil = Date.now() + REBUILD_TIMEOUT_MS;
     writeMeta_(ss, meta);

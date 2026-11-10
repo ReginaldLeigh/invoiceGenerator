@@ -1,0 +1,16 @@
+Client,ATTN,Street,Suite,Address 3,Invoice #,Address 4,City,Province,Postal,Country,Client ID,Notes,Inv Date,Due,Employee,Rate,Hours,Line Type,Work Order,PO #,Date Worked,Internal ID,Tax,Project,Location,Shift
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,check rate,11/14/2026,12/14/2026,Ana Silva,45.00,8,Regular,WO-88,PO-7781,11/03/2026,ID-9000,ONHST,,Studio A,Day
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,,11/14/2026,12/14/2026,Ana Silva,45.00,7.5,Regular,WO-88,PO-7781,11/04/2026,ID-9001,ONHST,,Studio A,Day
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,,11/14/2026,12/14/2026,Ana Silva,45.00,9,Regular,WO-88,PO-7781,11/05/2026,ID-9002,ONHST,,Studio B,Night
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,,11/14/2026,12/14/2026,Ben Okafor,38.50,8,Regular,WO-88,PO-7781,11/03/2026,ID-9003,ONHST,,Studio A,Day
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,check rate,11/14/2026,12/14/2026,Ben Okafor,38.50,10,Regular,WO-88,PO-7781,11/06/2026,ID-9004,ONHST,,Studio A,Day
+Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,TAL-501,,Toronto,ON,M5V 1L9,Canada,C-1001,,11/14/2026,12/14/2026,Ben Okafor,57.75,2,Overtime,WO-88,PO-7781,11/06/2026,ID-9005,ONHST,,Studio A,Day
+Harbour Events,Jane Doe,12 Water St,,,TAL-502,,Ottawa,ON,K1P 5G3,Canada,C-1002,,11/14/2026,12/29/2026,Chloé Tremblay,52.00,6,Regular,WO-91,HE-220,10/30/2026,ID-9006,ONHST,,Pier 21,Evening
+Harbour Events,Jane Doe,12 Water St,,,TAL-502,,Ottawa,ON,K1P 5G3,Canada,C-1002,,11/14/2026,12/29/2026,Chloé Tremblay,52.00,6,Regular,WO-91,HE-220,11/02/2026,ID-9007,ONHST,,Pier 21,Evening
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,check rate,11/20/2026,12/20/2026,Equipment fee,250.00,1,Fee,WO-120,PO-9001,11/09/2026,ID-9008,GST,,,
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,,11/20/2026,12/20/2026,Ana Silva,45.00,8,Regular,WO-120,PO-9001,11/09/2026,ID-9009,GST,P-1001,Stage 1,Day
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,,11/20/2026,12/20/2026,Ben Okafor,38.50,8,Regular,WO-120,PO-9001,11/09/2026,ID-9010,GST,P-1001,Stage 1,Day
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,,11/20/2026,12/20/2026,Ana Silva,45.00,6,Regular,WO-121,PO-9002,11/10/2026,ID-9011,GST,P-1002,Stage 3,Day
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,check rate,11/20/2026,12/20/2026,Ana Silva,45.00,8,Regular,WO-120,PO-9001,11/10/2026,ID-9012,GST,P-1001,Stage 1,Day
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,,11/20/2026,12/20/2026,Ben Okafor,57.75,3,Overtime,WO-121,PO-9002,11/11/2026,ID-9013,GST,P-1002,Stage 3,Night
+Maple Productions,Production Office,1080 Mainland St,,,INV-3001,,Vancouver,BC,V6B 2T4,Canada,C-3001,,11/20/2026,12/20/2026,Chloé Tremblay,52.00,7,Regular,WO-121,PO-9002,11/11/2026,ID-9014,GST,P-1002,Stage 3,Day
