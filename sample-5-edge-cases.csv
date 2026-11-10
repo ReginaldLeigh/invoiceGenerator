@@ -1,0 +1,10 @@
+Invoice #,Client #,Invoice Date,Payment Due Date,Client,ATTN,Address 1,Address 2,Address 3,Address 4,City,State / Province,Postal Code,Country,Candidate / Role,Work Order,PO,Work Date,Line Type,Units,Rate,Tax Code,Project Number,Location,Shift
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Units with text,WO-500,PO-500,11/23/2026,Regular,8 hrs,40.00,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Blank units,WO-500,PO-500,11/23/2026,Regular,,40.00,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Rate n/a,WO-500,PO-500,11/24/2026,Regular,4,n/a,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Blank rate,WO-500,PO-500,11/24/2026,Regular,4,,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Blank line type,WO-500,PO-500,11/25/2026,,3,40.00,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Unreadable date,WO-500,PO-500,next Tuesday,Regular,2,40.00,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,,WO-500,PO-500,11/26/2026,Regular,1,40.00,ONHST,,,
+,C-5001,11/27/2026,,Edge Case Testing Ltd,,,,,,,,,,No invoice number,WO-500,PO-500,11/26/2026,Regular,5,40.00,ONHST,,,
+E-501,C-5001,11/27/2026,,Edge Case Testing Ltd,QA Team,77 Bay St,Floor 3,,,Toronto,ON,m5j 2r8,Canada,Credit (negative),WO-500,PO-500,11/26/2026,Adjustment,1,-25.00,ONHST,,,

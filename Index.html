@@ -54,7 +54,7 @@
     table.list td.num, table.list th.num { text-align:right; }
     .warn { background:#fffaeb; border:1px solid #fedf89; border-radius:6px; padding:10px 12px; margin-top:12px; font-size:13px; }
     .warn ul { margin:6px 0 0; padding-left:18px; }
-    .hidden { display:none; }
+    .hidden { display:none !important; }
     .group-title { grid-column:1/-1; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); margin:10px 0 -4px; border-bottom:1px solid var(--border); padding-bottom:4px; }
     .group-title:first-child { margin-top:0; }
     .details { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px 16px; margin-top:8px; }
@@ -65,6 +65,23 @@
     fieldset { border:0; margin:0; padding:0; min-width:0; }
     legend { font-weight:600; font-size:13px; margin-bottom:6px; padding:0; }
     label.radio { font-weight:400; display:flex; align-items:center; gap:8px; margin:0 0 6px; cursor:pointer; }
+    button.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); padding:8px 14px; }
+    button.secondary.danger { color:var(--err); border-color:var(--err); }
+    button.secondary.danger.armed { background:var(--err); color:#fff; }
+    button.small { padding:8px 14px; }
+    button.link { background:none; color:var(--accent); padding:8px 4px; text-decoration:underline; }
+    .preset-bar, .preset-save { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .preset-bar select { width:auto; min-width:240px; max-width:100%; flex:1 1 240px; }
+    .preset-save { margin-top:12px; padding:12px; background:#f0f5fb; border-radius:8px; }
+    .preset-save input[type=text] { flex:1 1 240px; width:auto; }
+    .preset-save label.radio { margin:0; }
+    .status.ok { color:var(--ok); }
+    p.status { margin:10px 0 0; min-height:1em; }
+    .note-box { background:#f0f5fb; border:1px solid #c7d7ea; border-radius:6px; padding:10px 12px; margin-top:12px; font-size:13px; }
+    .note-box ul { margin:6px 0 0; padding-left:18px; }
+    #taxTable input { width:90px; text-align:right; }
+    #taxTable td.fr { color:var(--muted); }
+    .match { background:#ecfdf3; border:1px solid #abefc6; border-radius:6px; padding:8px 12px; margin-top:12px; font-size:13px; color:var(--ok); }
   </style>
 </head>
 <body>
@@ -85,11 +102,33 @@
     <label class="check"><input type="checkbox" id="rebuildNotify"> Email me the updated links</label>
     <div class="actions" style="margin-top:16px">
       <button id="rebuildBtn" type="button"><span id="rebuildLabel">Rebuild PDF</span></button>
+      <span class="status" id="rebuildStatus" role="status" aria-live="polite"></span>
       <a href="#" id="showNewJob" class="hidden">Start a new submission instead</a>
     </div>
   </section>
 
   <div id="newJob">
+
+  <!-- Presets: saved copies of the whole form -->
+  <section class="card" id="presetCard">
+    <h2><span class="step">★</span> Presets</h2>
+    <p class="help">If your files always use the same columns, save the form as a preset: column letters, extra details, options, business details and email. Pick it next time to fill everything in. Your <strong>default</strong> preset fills in the form as soon as this page opens, so you only need to upload the file and click Generate.</p>
+    <div class="preset-bar">
+      <select id="presetSelect" aria-label="Choose a preset"><option value="">— No preset —</option></select>
+      <button type="button" class="secondary" id="presetUpdate" disabled title="Save the current form into the selected preset">Update preset</button>
+      <button type="button" class="secondary" id="presetDefault" disabled>Make default</button>
+      <button type="button" class="secondary danger" id="presetDelete" disabled>Delete</button>
+      <button type="button" class="secondary" id="presetNew">Save as new preset…</button>
+    </div>
+    <div class="preset-save hidden" id="presetSaveRow">
+      <input type="text" id="presetName" maxlength="60" placeholder="Preset name, e.g. Northwind weekly timesheet" aria-label="Preset name">
+      <label class="radio"><input type="checkbox" id="presetMakeDefault"> Use as my default</label>
+      <button type="button" class="small" id="presetSave">Save preset</button>
+      <button type="button" class="link" id="presetCancel">Cancel</button>
+      <p class="preview-note" style="flex-basis:100%;margin:0">Tip: upload a file first. The preset then remembers its column headers and warns you if a later file's columns don't match.</p>
+    </div>
+    <p class="status" id="presetStatus" role="status" aria-live="polite"></p>
+  </section>
 
   <!-- Step 1: Upload -->
   <section class="card">
@@ -103,6 +142,7 @@
     <div id="previewArea" class="hidden">
       <div class="preview-wrap"><table class="preview" id="preview"></table></div>
       <p class="preview-note" id="previewNote"></p>
+      <div id="headerCheck" class="hidden"></div>
     </div>
   </section>
 
@@ -113,8 +153,19 @@
     <form id="mappingForm" onsubmit="return false">
       <div class="grid" id="mappingFields"></div>
 
+      <p class="preview-note" style="margin-top:10px">Accepted tax codes (any capitalisation): <strong>EXEMPT, GST, HST, NSHST, ONHST, PEI, QST</strong>, or the French TPS, TVH, NETVH, ONTVH, IPE. A blank or unknown code is invoiced as EXEMPT, with a note.</p>
+
+      <div class="group-title" style="margin-top:20px">Group line items by <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">· optional</span></div>
+      <p class="help" style="margin:8px 0 0">Lines are listed under a heading for each value in this column, e.g. <em>Project Number: P-1001</em>. Totals are not affected. The heading label defaults to that column's header.</p>
+      <div class="details">
+        <div class="detail-row">
+          <input type="text" class="col" id="groupCol" maxlength="3" autocomplete="off" placeholder="–" aria-label="Group line items by: column">
+          <input type="text" class="dlabel" id="groupLabel" maxlength="60" placeholder="Heading label (optional)" aria-label="Group heading label">
+        </div>
+      </div>
+
       <div class="group-title" style="margin-top:20px">Extra details <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">· optional, up to 10</span></div>
-      <p class="help" style="margin:8px 0 0">Each extra detail is printed as an indented line under its line item, e.g. <em>PO number: 4471</em> or <em>Location: Studio A</em>. Enter the column letter; the label defaults to that column's header.</p>
+      <p class="help" style="margin:8px 0 0">Each extra detail is printed as a small line under its line item, e.g. <em>Location: Studio A</em>. Enter the column letter; the label defaults to that column's header.</p>
       <div class="details" id="detailFields"></div>
       <label class="check"><input type="checkbox" id="hasHeader" checked> The first row is a header row (skip it)</label>
       <div class="grid" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(260px,320px))">
@@ -138,28 +189,10 @@
     </form>
   </section>
 
-  <!-- Step 3: Business details -->
+  <!-- Step 3: Output + delivery -->
   <section class="card">
-    <h2><span class="step">3</span> Your business details</h2>
-    <p class="help">These show on every invoice. Your settings are saved for next time.</p>
-    <div class="grid">
-      <div><label for="companyName">Business name</label><input type="text" id="companyName"></div>
-      <div><label for="companyEmail">Business email</label><input type="email" id="companyEmail"></div>
-      <div><label for="currency">Currency symbol</label><input type="text" id="currency" value="$" maxlength="5"></div>
-      <div><label for="defaultTaxRate">Default tax rate (%)</label><input type="number" id="defaultTaxRate" min="0" step="0.01" placeholder="0"></div>
-      <div><label for="taxName">Tax name <span class="hint">· optional</span></label><input type="text" id="taxName" maxlength="40" placeholder="Tax / Taxes, GST, TPS + TVQ…"></div>
-      <div><label for="accentColor">Accent color</label><input type="color" id="accentColor" value="#1f4e79" style="height:38px;width:80px;padding:2px;border:1px solid var(--border);border-radius:6px"></div>
-    </div>
-    <div class="grid" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
-      <div><label for="companyAddress">Business address</label><textarea id="companyAddress"></textarea></div>
-      <div><label for="footer">Footer / payment terms</label><textarea id="footer" placeholder="e.g. Payment due within 30 days. Thank you for your business!"></textarea></div>
-    </div>
-  </section>
-
-  <!-- Step 4: Output + delivery -->
-  <section class="card">
-    <h2><span class="step">4</span> Output and delivery</h2>
-    <p class="help">Choose the invoice language and format. When the PDFs are ready, a Google Drive link is emailed to the address below.</p>
+    <h2><span class="step">3</span> Output and delivery</h2>
+    <p class="help">Choose the invoice language and format. Every word on the invoice follows the language you pick.</p>
     <div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr))">
       <fieldset>
         <legend>Invoice language</legend>
@@ -168,8 +201,8 @@
       </fieldset>
       <fieldset>
         <legend>Line items</legend>
-        <label class="radio"><input type="checkbox" id="combineEmployees"> Combine each employee's rows into one line item</label>
-        <p class="preview-note" style="margin-top:0">Adds up the hours and shows the date range from the earliest to the latest date. Different rates or roles stay on separate lines.</p>
+        <label class="radio"><input type="checkbox" id="combineEmployees"> Combine each candidate's rows into one line item</label>
+        <p class="preview-note" style="margin-top:0">Adds up the units and shows the date range. Rows with a different line type, rate, work order, purchase order or group stay on separate lines.</p>
       </fieldset>
       <fieldset>
         <legend>PDF output</legend>
@@ -177,14 +210,13 @@
         <label class="radio"><input type="radio" name="outputMode" value="combined" checked> A single PDF with all invoices</label>
       </fieldset>
       <div>
-        <label for="recipient">Email the link to <span class="req">*</span></label>
-        <input type="email" id="recipient" autocomplete="email" placeholder="you@example.com">
-        <p class="preview-note">Defaults to your Google account. If you enter someone else, they get view access to the Drive folder.</p>
+        <legend style="font-weight:600;font-size:13px;margin-bottom:6px">Delivery</legend>
+        <p class="preview-note" id="emailLine" style="margin-top:0">The link will be emailed to your Google account.</p>
       </div>
     </div>
   </section>
 
-  <p class="help">The job folder will contain the PDF and an editable spreadsheet (Invoices + Settings tabs) for small corrections.</p>
+  <p class="help">The job folder will contain the PDF, an editable spreadsheet (Invoices + Settings tabs) for small corrections, and a copy of your original file.</p>
   <div class="actions">
     <button id="generate"><span id="btnLabel">Generate invoice PDFs</span></button>
     <span class="status" id="status"></span>
@@ -194,6 +226,23 @@
 
   <!-- Results -->
   <section class="card results hidden" id="results" style="margin-top:16px"></section>
+
+  <!-- Tax rates (shared by all users; only admins can edit) -->
+  <section class="card" id="taxCard" style="margin-top:24px">
+    <h2><span class="step">%</span> Tax rates</h2>
+    <p class="help">Used for every new invoice, by everyone who uses this app. Invoices already made keep the rates they were made with.</p>
+    <div class="preview-wrap" style="margin-top:0">
+      <table class="list" id="taxTable"></table>
+    </div>
+    <p class="preview-note">QST invoices use GST + PST (French: TPS + TVQ). EXEMPT is always 0%.</p>
+    <p class="preview-note" id="taxUpdated"></p>
+    <div class="actions hidden" id="taxActions" style="margin-top:12px">
+      <button type="button" class="small" id="taxSave">Save tax rates</button>
+      <button type="button" class="secondary danger" id="taxReset">Restore defaults</button>
+    </div>
+    <p class="preview-note hidden" id="taxReadOnly">Tax rates can only be changed by an admin.</p>
+    <p class="status" id="taxStatus" role="status" aria-live="polite"></p>
+  </section>
 </main>
 
 <script>
@@ -203,7 +252,7 @@
   var lastFocused = null;       // column-letter input last focused
   var MAX_DETAILS = 10;
   var previewHeader = [];       // header row from the preview, for detail-label placeholders
-  var OPTION_IDS = ['dateFormat','numberFormat','companyName','companyEmail','companyAddress','currency','defaultTaxRate','taxName','accentColor','footer','recipient'];
+  var OPTION_IDS = ['dateFormat','numberFormat'];
   var RADIO_NAMES = ['language','outputMode'];
   var previewToken = 0;         // ignores late previews when the file is changed quickly
   var busy = false;             // blocks double submissions from this tab
@@ -234,29 +283,47 @@
     var link = input.value.trim();
     var ok = /\/d\/[A-Za-z0-9_-]{20,}/.test(link) || /^[A-Za-z0-9_-]{20,}$/.test(link);
     input.classList.toggle('invalid', !ok);
-    if (!ok) { showError('Please paste the link to the invoice spreadsheet.'); return; }
-    setBusy(true);
-    setStatus('Rebuilding the PDF from the spreadsheet…');
+    if (!ok) { showError('Please paste the link to the invoice spreadsheet.', 'rebuildStatus'); return; }
+    setBusy(true, 'rebuild');
+    setStatus('Rebuilding the PDF from the spreadsheet…', 'rebuildStatus');
     document.getElementById('results').classList.add('hidden');
     google.script.run
-      .withSuccessHandler(function (res) { setBusy(false); setStatus(''); renderResults(res); })
-      .withFailureHandler(function (err) { setBusy(false); showError(err); })
+      .withSuccessHandler(function (res) { setBusy(false); setStatus('', 'rebuildStatus'); renderResults(res); })
+      .withFailureHandler(function (err) { setBusy(false); showError(err, 'rebuildStatus'); })
       .rebuildFromSpreadsheet({ sheet: link, notify: document.getElementById('rebuildNotify').checked });
   });
 
-  document.getElementById('hasHeader').addEventListener('change', function () { updateDetailPlaceholders(); });
+  document.getElementById('hasHeader').addEventListener('change', function () { updateDetailPlaceholders(); checkHeaders(); });
 
   // ---------- Setup ----------
+  var userEmail = '';
+  var FORM_DEFAULTS = null;     // the blank form, used to reset fields a preset leaves empty
   google.script.run
     .withSuccessHandler(function (cfg) {
       FIELDS = cfg.fields;
+      userEmail = cfg.userEmail || '';
       renderMappingFields();
-      if (cfg.saved) applySaved(cfg.saved);
-      var r = document.getElementById('recipient');
-      if (!r.value && cfg.userEmail) r.value = cfg.userEmail;
+      FORM_DEFAULTS = collectFormState();
+      renderPresetList(cfg.presets || [], cfg.defaultName || '');
+      if (cfg.defaultPreset) {
+        applyPreset(cfg.defaultPreset);
+        setStatus('Filled in from your default preset “' + cfg.defaultPreset.name + '”.', 'presetStatus', 'ok');
+      } else if (cfg.saved) {
+        applyFormState(cfg.saved);   // no default preset: last-used settings, as before
+      }
+      showEmailLine();
+      renderTax(cfg.tax);
     })
-    .withFailureHandler(showError)
+    .withFailureHandler(function (err) { showError(err); showError(err, 'rebuildStatus'); })
     .getConfig();
+
+  /** Files and the email always go to the signed-in account; there is no recipient box. */
+  function showEmailLine() {
+    var el = document.getElementById('emailLine');
+    el.innerHTML = userEmail
+      ? 'The link will be emailed to <strong>' + esc(userEmail) + '</strong> (your Google account).'
+      : 'The link will be emailed to your Google account.';
+  }
 
   function renderMappingFields() {
     var GROUP_TITLES = { Invoice: 'Invoice', Client: 'Client (bill to)', Work: 'Work / line items', Other: 'Other' };
@@ -290,21 +357,285 @@
     });
   }
 
-  function applySaved(saved) {
-    var m = saved.mapping || {}, o = saved.options || {};
-    FIELDS.forEach(function (f) { if (m[f.key]) document.getElementById('map_' + f.key).value = m[f.key]; });
-    OPTION_IDS.forEach(function (id) { if (o[id] != null && o[id] !== '') document.getElementById(id).value = o[id]; });
-    if (o.hasHeader != null) document.getElementById('hasHeader').checked = !!o.hasHeader;
-    if (o.combineEmployees != null) document.getElementById('combineEmployees').checked = !!o.combineEmployees;
-    (m.details || []).forEach(function (det, n) {
-      if (n >= MAX_DETAILS || !det) return;
+  /** The whole form as { mapping, options }: the shape sent to the server and stored in presets. */
+  function collectFormState() {
+    var mapping = {};
+    FIELDS.forEach(function (f) { mapping[f.key] = document.getElementById('map_' + f.key).value.trim().toUpperCase(); });
+    mapping.details = [];
+    for (var n = 0; n < MAX_DETAILS; n++) {
+      mapping.details.push({
+        col: document.getElementById('dcol_' + n).value.trim().toUpperCase(),
+        label: document.getElementById('dlabel_' + n).value.trim()
+      });
+    }
+    mapping.groupBy = {
+      col: document.getElementById('groupCol').value.trim().toUpperCase(),
+      label: document.getElementById('groupLabel').value.trim()
+    };
+    var options = {
+      hasHeader: document.getElementById('hasHeader').checked,
+      combineEmployees: document.getElementById('combineEmployees').checked
+    };
+    OPTION_IDS.forEach(function (id) { options[id] = document.getElementById(id).value; });
+    RADIO_NAMES.forEach(function (name) {
+      var r = document.querySelector('input[name="' + name + '"]:checked');
+      options[name] = r ? r.value : '';
+    });
+    return { mapping: mapping, options: options };
+  }
+
+  /**
+   * Fills in the form from a saved state. Every field is set: anything the
+   * state leaves out goes back to the blank form's value, so applying a
+   * preset never leaves column letters behind from a previous one.
+   */
+  function applyFormState(state) {
+    var d = FORM_DEFAULTS || { mapping: { details: [] }, options: {} };
+    var m = (state && state.mapping) || {}, o = (state && state.options) || {};
+    var pick = function (v, def) { return v == null ? (def == null ? '' : def) : v; };
+    FIELDS.forEach(function (f) {
+      document.getElementById('map_' + f.key).value = pick(m[f.key], d.mapping[f.key]);
+    });
+    for (var n = 0; n < MAX_DETAILS; n++) {
+      var det = (m.details || [])[n] || {};
       document.getElementById('dcol_' + n).value = det.col || '';
       document.getElementById('dlabel_' + n).value = det.label || '';
+    }
+    var grp = m.groupBy || {};
+    document.getElementById('groupCol').value = grp.col || '';
+    document.getElementById('groupLabel').value = grp.label || '';
+    OPTION_IDS.forEach(function (id) {
+      var el = document.getElementById(id);
+      el.value = pick(o[id], d.options[id]);
+      if (el.tagName === 'SELECT' && el.selectedIndex < 0) el.selectedIndex = 0;
     });
+    document.getElementById('hasHeader').checked = !!pick(o.hasHeader, d.options.hasHeader);
+    document.getElementById('combineEmployees').checked = !!pick(o.combineEmployees, d.options.combineEmployees);
     RADIO_NAMES.forEach(function (name) {
-      var r = o[name] && document.querySelector('input[name="' + name + '"][value="' + o[name] + '"]');
+      var v = pick(o[name], d.options[name]);
+      var r = document.querySelector('input[name="' + name + '"][value="' + v + '"]') ||
+              document.querySelector('input[name="' + name + '"][value="' + d.options[name] + '"]');
       if (r) r.checked = true;
     });
+    document.querySelectorAll('input.invalid').forEach(function (i) { i.classList.remove('invalid'); });
+    highlightMapped();
+    updateDetailPlaceholders();
+  }
+
+  // ---------- Presets ----------
+  var presets = [];             // [{ name, updated, isDefault }]
+  var defaultName = '';
+  var activePreset = null;      // the full preset last applied or saved
+  var presetDirty = false;      // form changed since the preset was applied
+  var presetSelect = document.getElementById('presetSelect');
+  var deleteTimer = null;
+
+  function renderPresetList(list, defName) {
+    presets = list || [];
+    defaultName = defName || '';
+    var current = activePreset ? activePreset.name.toLowerCase() : '';
+    presetSelect.innerHTML = '<option value="">' + (presets.length ? '— No preset —' : '— No presets saved yet —') + '</option>' +
+      presets.map(function (p) {
+        return '<option value="' + esc(p.name) + '"' + (p.name.toLowerCase() === current ? ' selected' : '') + '>' +
+          esc(p.name) + (p.isDefault ? '  (default)' : '') + '</option>';
+      }).join('');
+    if (activePreset && !presets.some(function (p) { return p.name.toLowerCase() === current; })) activePreset = null;
+    updatePresetButtons();
+  }
+
+  function selectedPreset() {
+    var name = presetSelect.value;
+    return presets.filter(function (p) { return p.name === name; })[0] || null;
+  }
+
+  function updatePresetButtons() {
+    var p = selectedPreset();
+    var off = !p || busy || presetBusy;
+    document.getElementById('presetUpdate').disabled = off;
+    document.getElementById('presetDelete').disabled = off;
+    var def = document.getElementById('presetDefault');
+    def.disabled = off;
+    def.textContent = p && p.isDefault ? 'Remove as default' : 'Make default';
+    disarmDelete();
+  }
+
+  function applyPreset(preset) {
+    applyFormState(preset);
+    activePreset = preset;
+    presetDirty = false;
+    presetSelect.value = preset.name;
+    updatePresetButtons();
+    checkHeaders();
+  }
+
+  presetSelect.addEventListener('change', function () {
+    var name = presetSelect.value;
+    updatePresetButtons();
+    if (!name) { activePreset = null; checkHeaders(); setStatus('', 'presetStatus'); return; }
+    setStatus('Loading “' + name + '”…', 'presetStatus');
+    presetCall('getPreset', name, function (preset) {
+      if (presetSelect.value !== name) return; // the user picked another one meanwhile
+      applyPreset(preset);
+      setStatus('Filled in from “' + preset.name + '”.', 'presetStatus', 'ok');
+    });
+  });
+
+  document.getElementById('presetNew').addEventListener('click', function () {
+    var row = document.getElementById('presetSaveRow');
+    row.classList.remove('hidden');
+    var nameInput = document.getElementById('presetName');
+    if (!nameInput.value && activePreset) nameInput.value = activePreset.name + ' (copy)';
+    document.getElementById('presetMakeDefault').checked = !presets.length; // first preset: default by default
+    nameInput.focus();
+    nameInput.select();
+  });
+  document.getElementById('presetCancel').addEventListener('click', function () {
+    document.getElementById('presetSaveRow').classList.add('hidden');
+    document.getElementById('presetName').value = '';
+  });
+  document.getElementById('presetName').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); document.getElementById('presetSave').click(); }
+  });
+
+  document.getElementById('presetSave').addEventListener('click', function () {
+    var nameInput = document.getElementById('presetName');
+    var name = nameInput.value.replace(/\s+/g, ' ').trim();
+    nameInput.classList.toggle('invalid', !name);
+    if (!name) { showError('Please give the preset a name.', 'presetStatus'); nameInput.focus(); return; }
+    var exists = presets.some(function (p) { return p.name.toLowerCase() === name.toLowerCase(); });
+    savePresetNamed(name, document.getElementById('presetMakeDefault').checked, function (res) {
+      document.getElementById('presetSaveRow').classList.add('hidden');
+      nameInput.value = '';
+      setStatus((exists ? 'Replaced preset “' : 'Saved preset “') + res.saved.name + '”' +
+        (res.defaultName === res.saved.name ? ' as your default.' : '.'), 'presetStatus', 'ok');
+    });
+  });
+
+  document.getElementById('presetUpdate').addEventListener('click', function () {
+    var p = selectedPreset();
+    if (!p) return;
+    savePresetNamed(p.name, false, function (res) {
+      setStatus('Updated preset “' + res.saved.name + '” with the current form.', 'presetStatus', 'ok');
+    });
+  });
+
+  function savePresetNamed(name, makeDefault, done) {
+    var state = collectFormState();
+    presetCall('savePreset', {
+      name: name, mapping: state.mapping, options: state.options,
+      headers: currentHeaders(state), makeDefault: makeDefault
+    }, function (res) {
+      activePreset = res.saved;
+      presetDirty = false;
+      renderPresetList(res.presets, res.defaultName);
+      presetSelect.value = res.saved.name;
+      updatePresetButtons();
+      checkHeaders();
+      done(res);
+    });
+  }
+
+  document.getElementById('presetDefault').addEventListener('click', function () {
+    var p = selectedPreset();
+    if (!p) return;
+    var clearing = p.isDefault;
+    presetCall('setDefaultPreset', clearing ? '' : p.name, function (res) {
+      renderPresetList(res.presets, res.defaultName);
+      setStatus(clearing ? '“' + p.name + '” is no longer your default. The form will open with your last-used settings.'
+                         : '“' + p.name + '” will fill in the form whenever you open this page.', 'presetStatus', 'ok');
+    });
+  });
+
+  // Delete needs a second click within a few seconds (no pop-up dialogs).
+  document.getElementById('presetDelete').addEventListener('click', function () {
+    var btn = this, p = selectedPreset();
+    if (!p) return;
+    if (!btn.classList.contains('armed')) {
+      btn.classList.add('armed');
+      btn.textContent = 'Click again to delete';
+      deleteTimer = setTimeout(disarmDelete, 4000);
+      return;
+    }
+    disarmDelete();
+    presetCall('deletePreset', p.name, function (res) {
+      activePreset = null;
+      renderPresetList(res.presets, res.defaultName);
+      checkHeaders();
+      setStatus('Deleted preset “' + p.name + '”. The form still shows its values.', 'presetStatus', 'ok');
+    });
+  });
+  function disarmDelete() {
+    clearTimeout(deleteTimer);
+    var btn = document.getElementById('presetDelete');
+    btn.classList.remove('armed');
+    btn.textContent = 'Delete';
+  }
+
+  function presetCall(fn, arg, onOk) {
+    setPresetBusy(true);
+    google.script.run
+      .withSuccessHandler(function (res) { setPresetBusy(false); onOk(res); })
+      .withFailureHandler(function (err) { setPresetBusy(false); showError(err, 'presetStatus'); })[fn](arg);
+  }
+  var presetBusy = false;
+  function setPresetBusy(on) {
+    presetBusy = on;
+    ['presetSave', 'presetNew'].forEach(function (id) { document.getElementById(id).disabled = on; });
+    presetSelect.disabled = on;
+    if (on) ['presetUpdate', 'presetDefault', 'presetDelete'].forEach(function (id) { document.getElementById(id).disabled = true; });
+    else updatePresetButtons();
+  }
+
+  // Note when the form no longer matches the preset that filled it in.
+  newJob.addEventListener('input', markDirty);
+  newJob.addEventListener('change', markDirty);
+  function markDirty(e) {
+    if (!activePreset || presetDirty) return;
+    if (e.target.closest('#presetCard') || e.target.id === 'file') return;
+    presetDirty = true;
+    setStatus('You changed the form after choosing “' + activePreset.name + '”. Click Update preset to keep these changes for next time.', 'presetStatus');
+  }
+
+  /** Header text of each mapped column in the uploaded file, e.g. { A: 'Invoice #' }. */
+  function currentHeaders(state) {
+    var out = {};
+    if (!document.getElementById('hasHeader').checked || !previewHeader.length) return out;
+    var cols = FIELDS.map(function (f) { return state.mapping[f.key]; })
+      .concat(state.mapping.details.map(function (d) { return d.col; }))
+      .concat([state.mapping.groupBy && state.mapping.groupBy.col]);
+    cols.forEach(function (c) {
+      if (!c) return;
+      var v = previewHeader[colIndex(c)];
+      if (v != null && String(v).trim()) out[c] = String(v).trim();
+    });
+    return out;
+  }
+
+  /** Compares the uploaded file's headers with the ones the active preset remembers. */
+  function checkHeaders() {
+    var box = document.getElementById('headerCheck');
+    var expected = activePreset && activePreset.headers;
+    var cols = expected ? Object.keys(expected) : [];
+    if (!cols.length || !previewHeader.length || !document.getElementById('hasHeader').checked) {
+      box.className = 'hidden'; box.innerHTML = ''; return;
+    }
+    var norm = function (s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); };
+    var diffs = cols.sort(function (a, b) { return colIndex(a) - colIndex(b); }).filter(function (c) {
+      return norm(previewHeader[colIndex(c)]) !== norm(expected[c]);
+    });
+    if (!diffs.length) {
+      box.className = 'match';
+      box.textContent = '✓ This file\'s column headers match the preset “' + activePreset.name + '”.';
+      return;
+    }
+    box.className = 'warn';
+    box.innerHTML = '<strong>This file\'s columns don\'t match the preset “' + esc(activePreset.name) + '”.</strong>' +
+      ' Check that this is the right file, or fix the column letters below.<ul>' +
+      diffs.map(function (c) {
+        var got = previewHeader[colIndex(c)];
+        return '<li>Column ' + c + ' is <strong>' + (got ? '“' + esc(got) + '”' : 'empty') +
+          '</strong>; the preset expects “' + esc(expected[c]) + '”.</li>';
+      }).join('') + '</ul>';
   }
 
   // ---------- File handling ----------
@@ -344,6 +675,10 @@
       var head = useHeader && idx >= 0 && previewHeader[idx] ? previewHeader[idx] : '';
       document.getElementById('dlabel_' + n).placeholder = head || 'Label (optional)';
     }
+    var gcol = document.getElementById('groupCol').value;
+    var gidx = gcol ? colIndex(gcol) : -1;
+    var ghead = useHeader && gidx >= 0 && previewHeader[gidx] ? previewHeader[gidx] : '';
+    document.getElementById('groupLabel').placeholder = ghead || 'Heading label (optional)';
   }
   function colIndex(letters) {
     var x = 0;
@@ -381,6 +716,7 @@
     document.getElementById('previewArea').classList.remove('hidden');
     highlightMapped();
     updateDetailPlaceholders();
+    checkHeaders();
   }
 
   function highlightMapped() {
@@ -396,43 +732,25 @@
     if (busy) return;
     if (!fileData) { showError('Please upload a CSV or XLSX file first.'); return; }
 
-    var mapping = {}, problems = [];
+    var state = collectFormState();
+    var mapping = state.mapping, options = state.options, problems = [];
     FIELDS.forEach(function (f) {
       var inp = document.getElementById('map_' + f.key);
-      var v = inp.value.trim().toUpperCase();
+      var v = mapping[f.key];
       var bad = (f.required && !v) || (v && !/^[A-Z]{1,3}$/.test(v));
       inp.classList.toggle('invalid', bad);
       if (bad) problems.push(f.label);
-      mapping[f.key] = v;
     });
     if (problems.length) { showError('Please enter a column letter for: ' + problems.join(', ')); return; }
-    if (!mapping.employeeName && !mapping.description) {
-      document.getElementById('map_employeeName').classList.add('invalid');
-      showError('Please enter a column for Employee name or Role / description (or both).');
-      return;
-    }
-    mapping.details = [];
     for (var n = 0; n < MAX_DETAILS; n++) {
-      var dc = document.getElementById('dcol_' + n);
-      var col = dc.value.trim().toUpperCase();
+      var col = mapping.details[n].col;
       var badCol = col && !/^[A-Z]{1,3}$/.test(col);
-      dc.classList.toggle('invalid', !!badCol);
+      document.getElementById('dcol_' + n).classList.toggle('invalid', !!badCol);
       if (badCol) { showError('Extra detail ' + (n + 1) + ': "' + col + '" is not a column letter.'); return; }
-      mapping.details.push({ col: col, label: document.getElementById('dlabel_' + n).value.trim() });
     }
-
-    var options = {
-      hasHeader: document.getElementById('hasHeader').checked,
-      combineEmployees: document.getElementById('combineEmployees').checked
-    };
-    OPTION_IDS.forEach(function (id) { options[id] = document.getElementById(id).value; });
-    RADIO_NAMES.forEach(function (name) {
-      options[name] = document.querySelector('input[name="' + name + '"]:checked').value;
-    });
-    var rcp = document.getElementById('recipient');
-    var emailOk = /^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(rcp.value.trim());
-    rcp.classList.toggle('invalid', !emailOk);
-    if (!emailOk) { showError('Please enter a valid email address for the link.'); return; }
+    var gcol = mapping.groupBy.col, badGroup = gcol && !/^[A-Z]{1,3}$/.test(gcol);
+    document.getElementById('groupCol').classList.toggle('invalid', !!badGroup);
+    if (badGroup) { showError('Group line items by: "' + gcol + '" is not a column letter.'); return; }
 
     // Snapshot this submission. Changing the form afterwards won't affect it.
     var request = JSON.parse(JSON.stringify({ file: fileData, mapping: mapping, options: options }));
@@ -460,6 +778,13 @@
         res.skipped.slice(0, 20).map(function (s) { return '<li>Row ' + esc(s.row) + ': ' + esc(s.reason) + '</li>'; }).join('') +
         (res.skipped.length > 20 ? '<li>…and ' + (res.skipped.length - 20) + ' more</li>' : '') + '</ul></div>'
       : '';
+    var notesList = res.notes || [];
+    var notes = notesList.length
+      ? '<div class="note-box"><strong>' + notesList.length + ' note' + (notesList.length === 1 ? '' : 's') +
+        '</strong> (these rows were still invoiced):<ul>' +
+        notesList.slice(0, 30).map(function (n) { return '<li>' + esc(n) + '</li>'; }).join('') +
+        (notesList.length > 30 ? '<li>…and ' + (notesList.length - 30) + ' more</li>' : '') + '</ul></div>'
+      : '';
     el.innerHTML =
       '<h2>✓ ' + (res.rebuilt ? 'Rebuilt ' : 'Created ') + res.invoices.length + ' invoice' + (res.invoices.length === 1 ? '' : 's') + '</h2>' +
       '<p class="help">Saved to Drive folder <strong>' + esc(res.folderName) + '</strong>.' +
@@ -469,30 +794,103 @@
       (res.combinedUrl ? '<a href="' + res.combinedUrl + '" target="_blank" rel="noopener">Open PDF</a>' : '') +
       '<a href="' + res.sheetUrl + '" target="_blank" rel="noopener">Edit spreadsheet</a>' +
       '<a href="' + res.folderUrl + '" target="_blank" rel="noopener">Open Drive folder</a>' +
-      (res.zipUrl ? '<a href="' + res.zipUrl + '" target="_blank" rel="noopener">Download all (ZIP)</a>' : '') + '</div>' +
+      (res.zipUrl ? '<a href="' + res.zipUrl + '" target="_blank" rel="noopener">Download all (ZIP)</a>' : '') +
+      (res.originalUrl ? '<a href="' + res.originalUrl + '" target="_blank" rel="noopener">Original data file</a>' : '') + '</div>' +
       '<table class="list"><tr><th>Invoice #</th><th>Customer</th><th class="num">Total</th><th></th></tr>' + rows + '</table>' +
       '<p class="help" style="margin-top:12px">Need a small change? Edit the spreadsheet, then ' +
         (res.rebuildUrl ? '<a href="' + res.rebuildUrl + '" target="_blank" rel="noopener">rebuild the PDF</a>.'
                         : 'paste its link into the “Rebuild” box on this page.') + '</p>' +
-      warnings + skipped;
+      warnings + skipped + notes;
     el.classList.remove('hidden');
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  // ---------- Tax rates ----------
+  var taxState = null;
+  var taxResetTimer = null;
+  function fmtRate(v) { return String(Math.round(Number(v) * 1000) / 1000); }
+  function renderTax(t) {
+    if (!t) return;
+    taxState = t;
+    var head = '<tr><th>Tax</th><th>French</th><th class="num">Rate (%)</th></tr>';
+    var rows = t.rows.map(function (r) {
+      var val = fmtRate(t.rates[r.key]);
+      var cell = t.isAdmin
+        ? '<input type="text" inputmode="decimal" id="rate_' + r.key + '" value="' + esc(val) + '" aria-label="' + esc(r.key) + ' rate (%)">'
+        : esc(val) + '%';
+      return '<tr><td><strong>' + esc(r.en) + '</strong></td><td class="fr">' + esc(r.fr) + '</td><td class="num">' + cell + '</td></tr>';
+    }).join('');
+    var qst = Number(t.rates.GST) + Number(t.rates.PST);
+    document.getElementById('taxTable').innerHTML = head + rows +
+      '<tr><td><strong>QST</strong></td><td class="fr">QST</td><td class="num" style="color:var(--muted)">GST + PST = ' + fmtRate(qst) + '%</td></tr>';
+    document.getElementById('taxActions').classList.toggle('hidden', !t.isAdmin);
+    document.getElementById('taxReadOnly').classList.toggle('hidden', !!t.isAdmin);
+    document.getElementById('taxUpdated').textContent = t.updated
+      ? 'Last changed ' + new Date(t.updated).toLocaleString() + (t.updatedBy ? ' by ' + t.updatedBy : '') + '.'
+      : 'Using the starting rates.';
+    disarmTaxReset();
+  }
+  function taxCall(fn, arg, okMsg) {
+    var btns = ['taxSave', 'taxReset'].map(function (id) { return document.getElementById(id); });
+    btns.forEach(function (b) { b.disabled = true; });
+    setStatus('Saving…', 'taxStatus');
+    google.script.run
+      .withSuccessHandler(function (t) { btns.forEach(function (b) { b.disabled = false; }); renderTax(t); setStatus(okMsg, 'taxStatus', 'ok'); })
+      .withFailureHandler(function (err) { btns.forEach(function (b) { b.disabled = false; }); showError(err, 'taxStatus'); })[fn](arg);
+  }
+  document.getElementById('taxSave').addEventListener('click', function () {
+    if (!taxState) return;
+    var rates = {}, bad = [];
+    taxState.rows.forEach(function (r) {
+      var inp = document.getElementById('rate_' + r.key);
+      var v = inp.value.trim();
+      var ok = /^\d{1,3}(\.\d{1,3})?$/.test(v) && Number(v) <= 100;
+      inp.classList.toggle('invalid', !ok);
+      if (!ok) bad.push(r.key);
+      rates[r.key] = v;
+    });
+    if (bad.length) { showError('Enter a number from 0 to 100 (up to 3 decimals) for: ' + bad.join(', '), 'taxStatus'); return; }
+    taxCall('saveTaxRates', rates, 'Tax rates saved. New invoices will use them.');
+  });
+  // Restore defaults needs a second click within a few seconds (no pop-up dialogs).
+  document.getElementById('taxReset').addEventListener('click', function () {
+    var btn = this;
+    if (!btn.classList.contains('armed')) {
+      btn.classList.add('armed');
+      btn.textContent = 'Click again to restore';
+      taxResetTimer = setTimeout(disarmTaxReset, 4000);
+      return;
+    }
+    disarmTaxReset();
+    taxCall('resetTaxRates', null, 'Starting rates restored.');
+  });
+  function disarmTaxReset() {
+    clearTimeout(taxResetTimer);
+    var btn = document.getElementById('taxReset');
+    btn.classList.remove('armed');
+    btn.textContent = 'Restore defaults';
+  }
+
   // ---------- UI helpers ----------
-  function setBusy(on) {
+  /** mode: 'generate' (default) or 'rebuild', which decides which button shows the spinner. */
+  function setBusy(on, mode) {
     busy = on;
-    var b = document.getElementById('generate');
-    b.disabled = on;
+    document.getElementById('generate').disabled = on;
     document.getElementById('rebuildBtn').disabled = on;
     fileInput.disabled = on;
-    document.getElementById('btnLabel').innerHTML = on ? '<span class="spinner"></span>Generating…' : 'Generate invoice PDFs';
+    var rebuilding = on && mode === 'rebuild';
+    document.getElementById('btnLabel').innerHTML = on && !rebuilding ? '<span class="spinner"></span>Generating…' : 'Generate invoice PDFs';
+    document.getElementById('rebuildLabel').innerHTML = rebuilding ? '<span class="spinner"></span>Rebuilding…' : 'Rebuild PDF';
+    updatePresetButtons();
   }
-  function setStatus(msg) { var s = document.getElementById('status'); s.className = 'status'; s.textContent = msg; }
-  function showError(err) {
-    var s = document.getElementById('status');
-    s.className = 'status err';
-    s.textContent = (err && err.message) ? err.message : String(err);
+  /** Status messages go next to the button that started the action ('status', 'rebuildStatus' or 'presetStatus'). */
+  function setStatus(msg, where, kind) {
+    var s = document.getElementById(where || 'status');
+    s.className = 'status' + (kind ? ' ' + kind : '');
+    s.textContent = msg;
+  }
+  function showError(err, where) {
+    setStatus((err && err.message) ? err.message : String(err), where, 'err');
   }
   function esc(s) {
     return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');

@@ -1,5 +1,0 @@
-N° facture;Date;Échéance;Client;Courriel;Adresse;Article;Qté;Prix;TVQ %
-FAC-2001;2026-11-02;2026-12-02;Boulangerie Tremblay;compta@tremblay.example;"1200, rue Sainte-Catherine
-Montréal (Québec)";Conception de site Web;1;"1 250,00 $";14,975
-FAC-2001;;;;;;Hébergement (12 mois);12;25,50 $;
-FAC-2002;2026-11-04;;Café Lavoie;;;Heures de consultation;7,5;95;

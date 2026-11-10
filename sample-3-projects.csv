@@ -1,0 +1,8 @@
+Invoice #,Client #,Invoice Date,Payment Due Date,Client,ATTN,Address 1,Address 2,Address 3,Address 4,City,State / Province,Postal Code,Country,Candidate / Role,Work Order,PO,Work Date,Line Type,Units,Rate,Tax Code,Project Number,Location,Shift
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Equipment fee,WO-120,PO-9001,11/09/2026,Fee,1,250.00,GST,,,
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Ana Silva,WO-120,PO-9001,11/09/2026,Regular,8,45.00,GST,P-1001,Stage 1,Day
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Ben Okafor,WO-120,PO-9001,11/09/2026,Regular,8,38.50,GST,P-1001,Stage 1,Day
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Ana Silva,WO-121,PO-9002,11/10/2026,Regular,6,45.00,GST,P-1002,Stage 3,Day
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Ana Silva,WO-120,PO-9001,11/10/2026,Regular,8,45.00,GST,P-1001,Stage 1,Day
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Ben Okafor,WO-121,PO-9002,11/11/2026,Overtime,3,57.75,GST,P-1002,Stage 3,Night
+INV-3001,C-3001,11/20/2026,12/20/2026,Maple Productions,Production Office,1080 Mainland St,,,,Vancouver,BC,V6B 2T4,Canada,Chloé Tremblay,WO-121,PO-9002,11/11/2026,Regular,7,52.00,GST,P-1002,Stage 3,Day

@@ -1,0 +1,9 @@
+Invoice #,Client #,Invoice Date,Payment Due Date,Client,ATTN,Address 1,Address 2,Address 3,Address 4,City,State / Province,Postal Code,Country,Candidate / Role,Work Order,PO,Work Date,Line Type,Units,Rate,Tax Code,Project Number,Location,Shift
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ana Silva,WO-88,PO-7781,11/03/2026,Regular,8,45.00,ONHST,,Studio A,Day
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ana Silva,WO-88,PO-7781,11/04/2026,Regular,7.5,45.00,ONHST,,Studio A,Day
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ana Silva,WO-88,PO-7781,11/05/2026,Regular,9,45.00,ONHST,,Studio B,Night
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ben Okafor,WO-88,PO-7781,11/03/2026,Regular,8,38.50,ONHST,,Studio A,Day
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ben Okafor,WO-88,PO-7781,11/06/2026,Regular,10,38.50,ONHST,,Studio A,Day
+TAL-501,C-1001,11/14/2026,12/14/2026,Northwind Studios,Accounts Payable,500 King St W,Suite 1200,,,Toronto,ON,M5V 1L9,Canada,Ben Okafor,WO-88,PO-7781,11/06/2026,Overtime,2,57.75,ONHST,,Studio A,Day
+TAL-502,C-1002,11/14/2026,12/29/2026,Harbour Events,Jane Doe,12 Water St,,,,Ottawa,ON,K1P 5G3,Canada,Chloé Tremblay,WO-91,HE-220,10/30/2026,Regular,6,52.00,ONHST,,Pier 21,Evening
+TAL-502,C-1002,11/14/2026,12/29/2026,Harbour Events,Jane Doe,12 Water St,,,,Ottawa,ON,K1P 5G3,Canada,Chloé Tremblay,WO-91,HE-220,11/02/2026,Regular,6,52.00,ONHST,,Pier 21,Evening

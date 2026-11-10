@@ -1,0 +1,6 @@
+Invoice #;Client #;Invoice Date;Payment Due Date;Client;ATTN;Address 1;Address 2;Address 3;Address 4;City;State / Province;Postal Code;Country;Candidate / Role;Work Order;PO;Work Date;Line Type;Units;Rate;Tax Code;Project Number;Location;Shift
+FAC-2001;C-2001;14/11/2026;14/12/2026;Boulangerie Tremblay;Comptes fournisseurs;1200, rue Sainte-Catherine Ouest;Bureau 400;;;Montréal;QC;h3b 1k9;Canada;Marie Gagnon;REF-310;BC-5501;02/11/2026;Régulier;10;52,50;QST;;Atelier;Jour
+FAC-2001;C-2001;14/11/2026;14/12/2026;Boulangerie Tremblay;Comptes fournisseurs;1200, rue Sainte-Catherine Ouest;Bureau 400;;;Montréal;QC;h3b 1k9;Canada;Marie Gagnon;REF-310;BC-5501;03/11/2026;Régulier;10;52,50;QST;;Atelier;Jour
+FAC-2001;C-2001;14/11/2026;14/12/2026;Boulangerie Tremblay;Comptes fournisseurs;1200, rue Sainte-Catherine Ouest;Bureau 400;;;Montréal;QC;h3b 1k9;Canada;Luc Bouchard;REF-310;BC-5501;03/11/2026;Régulier;10;40,00;QST;;Entrepôt;Jour
+FAC-2001;C-2001;14/11/2026;14/12/2026;Boulangerie Tremblay;Comptes fournisseurs;1200, rue Sainte-Catherine Ouest;Bureau 400;;;Montréal;QC;h3b 1k9;Canada;Luc Bouchard;REF-310;BC-5501;04/11/2026;Heures sup.;2;53,00;QST;;Entrepôt;Soir
+FAC-2002;C-2002;16/11/2026;16/12/2026;Café Lavoie;;45, rue du Petit-Champlain;;;;Québec;QC;G1K 4H5;Canada;Sophie Roy;REF-412;;05/11/2026;Régulier;7,5;95,00;QST;;Boutique;Jour

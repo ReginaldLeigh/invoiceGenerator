@@ -1,8 +1,0 @@
-Invoice #,Date,Due,Customer,Email,Address,Item,Qty,Price,Tax %
-INV-1001,2026-11-01,2026-12-01,Acme Corp,ap@acme.example,"100 Main St
-Springfield, IL",Website design,1,"$2,500.00",8.25
-INV-1001,,,,,,Hosting (12 months),12,$25.00,
-,,,,,,Domain renewal,,$15.99,
-INV-1002,2026-11-03,2026-12-03,Globex LLC,billing@globex.example,42 Elm Ave,Consulting hours,10.5,150,
-INV-1002,,,,,,Travel expenses,1,(50.00),
-INV-1003,2026-11-05,,Initech,,,Bad row,abc,10,

@@ -1,117 +1,171 @@
 /**
- * Invoice PDF Generator — Google Apps Script web app.
+ * Invoice PDF Generator — Google Apps Script web app (version 3).
  *
- * Users upload a CSV or XLSX file, tell the app which column letter holds
- * each invoice field, choose English or French output, and the app creates a
- * Drive folder containing:
- *   - the invoice PDF(s), and
- *   - an editable Google Sheet of the same invoices.
- * The PDFs are always built from that spreadsheet. To make a small change,
- * the user edits the sheet and opens the "Rebuild PDF" link: the PDFs are
- * regenerated in place (same files, same links), with no re-upload.
- * A link to the folder is emailed to the user.
+ * Users upload a CSV or Excel export (single-line records from a database), tell
+ * the app which column letter holds each field, choose English or French, and
+ * the app creates a Drive folder containing:
+ *   - the invoice PDF(s),
+ *   - an editable Google Sheet of the same invoices (the PDFs are always built
+ *     from it, and a "Rebuild PDF" link regenerates them in place after edits),
+ *   - an untouched copy of the uploaded file.
+ * A link to the folder is emailed to the person who submitted the form.
  *
- * Rows that share an invoice number become line items on the same invoice.
- * A row with a blank invoice number is treated as another line item of the
- * invoice above it.
+ * Developer settings (logo, company details, government numbers, footer, accent
+ * colour, tax admins) live in Config.gs. See README → "Developer setup".
  *
  * Multi-user safety:
- *  - Deploy with "Execute as: User accessing the web app". Each user's
- *    files, emails, settings and quotas are then their own.
- *  - The server keeps no shared state. Every submission gets its own job ID
- *    and its own Drive folder, and all of its data travels in the request.
- *  - Saved settings are keyed by the signed-in user's email address.
- *  - The one shared resource (the "Invoice PDFs" root folder) is created
- *    under a lock, so two first-time runs can't create it twice.
+ *  - Deploy with "Execute as: User accessing the web app". Each user's files,
+ *    emails, presets and quotas are then their own.
+ *  - The server keeps no shared state per job. Every submission gets its own job
+ *    ID and Drive folder, and all of its data travels in the request.
+ *  - Shared state is limited to the tax rates (script properties, admin-only
+ *    writes under a lock) and the root folder (created under a lock).
  */
 
 const ROOT_FOLDER_NAME = 'Invoice PDFs';
 const ROOT_FOLDER_KEY = 'rootFolderId';
 const MAX_PREVIEW_ROWS = 6;
-const MAX_PREVIEW_COLS = 26;
+const MAX_PREVIEW_COLS = 40;
 const MAX_EMAIL_LINKS = 50;
 const META_SHEET = '_meta';
 const REBUILD_TIMEOUT_MS = 7 * 60 * 1000; // a run can't last longer than 6 minutes
-
-/**
- * Fixed column layouts of the editable "Invoices" tab (0-based), by spreadsheet
- * version. Version 2 adds employee + work date and up to 10 "extra detail"
- * columns (O–X) whose header text is the label printed on the PDF.
- * Version 1 sheets (no employee/detail columns) can still be rebuilt.
- */
-const SHEET_LAYOUTS = {
-  '1': {
-    map: { invoiceNumber: 0, invoiceDate: 1, dueDate: 2, customerName: 3, customerEmail: 4,
-           customerAddress: 5, description: 6, quantity: 7, unitPrice: 8, taxRate: 10, notes: 11 },
-    detailStart: null,
-  },
-  '2': {
-    map: { invoiceNumber: 0, invoiceDate: 1, dueDate: 2, customerName: 3, customerEmail: 4,
-           customerAddress: 5, employeeName: 6, workDate: 7, description: 8, quantity: 9,
-           unitPrice: 10, taxRate: 12, notes: 13 },
-    detailStart: 14,
-  },
-};
-const SHEET_VERSION = '2';
-const SHEET_BASE_WIDTH = 14; // columns A–N, before the extra details
 const MAX_DETAILS = 10;
+const MAX_PRESETS = 30;
+const MAX_PRESET_NAME = 60;
+const MAX_PRESET_BYTES = 8500; // a UserProperties value can hold about 9 KB
+const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+const DEFAULT_ACCENT = '#1f4e79';
+const ORIGINAL_PREFIX = 'Original data - ';
 
-/** Rows of the editable "Settings" tab, in order. */
-const SETTING_KEYS = ['language', 'outputMode', 'combineEmployees', 'companyName', 'companyAddress', 'companyEmail',
-  'currency', 'defaultTaxRate', 'taxName', 'accentColor', 'footer'];
+// ---------------------------------------------------------------------------
+// Form fields and the editable sheet layout
+// ---------------------------------------------------------------------------
 
 /** Fields the user maps to column letters, shown in groups on the form. */
 const FIELDS = [
-  { key: 'invoiceNumber',   group: 'Invoice', label: 'Invoice number',   required: true,  hint: 'Rows sharing a number are combined' },
-  { key: 'invoiceDate',     group: 'Invoice', label: 'Invoice date',     required: false },
-  { key: 'dueDate',         group: 'Invoice', label: 'Due date',         required: false },
-  { key: 'customerName',    group: 'Client',  label: 'Client name',      required: true },
-  { key: 'customerAddress', group: 'Client',  label: 'Client address',   required: false },
-  { key: 'customerEmail',   group: 'Client',  label: 'Client email',     required: false },
-  { key: 'employeeName',    group: 'Work',    label: 'Employee name',    required: false, hint: 'Shown as the line item' },
-  { key: 'workDate',        group: 'Work',    label: 'Work date',        required: false, hint: 'Date of each day / shift' },
-  { key: 'description',     group: 'Work',    label: 'Role / description', required: false },
-  { key: 'quantity',        group: 'Work',    label: 'Hours worked',     required: false, hint: 'Blank = 1' },
-  { key: 'unitPrice',       group: 'Work',    label: 'Pay rate',         required: true },
-  { key: 'taxRate',         group: 'Other',   label: 'Tax rate (%)',     required: false, hint: 'Overrides the default rate' },
-  { key: 'notes',           group: 'Other',   label: 'Notes',            required: false },
+  { key: 'invoiceNumber', group: 'Invoice', label: 'Invoice number', required: true, hint: 'Rows sharing a number form one invoice' },
+  { key: 'clientNumber',  group: 'Invoice', label: 'Client number' },
+  { key: 'invoiceDate',   group: 'Invoice', label: 'Invoice date' },
+  { key: 'dueDate',       group: 'Invoice', label: 'Payment due date' },
+  { key: 'customerName',  group: 'Client',  label: 'Client name', required: true },
+  { key: 'attention',     group: 'Client',  label: 'Attention (ATTN)' },
+  { key: 'address1',      group: 'Client',  label: 'Address 1' },
+  { key: 'address2',      group: 'Client',  label: 'Address 2' },
+  { key: 'address3',      group: 'Client',  label: 'Address 3' },
+  { key: 'address4',      group: 'Client',  label: 'Address 4' },
+  { key: 'city',          group: 'Client',  label: 'City' },
+  { key: 'province',      group: 'Client',  label: 'State / Province' },
+  { key: 'postalCode',    group: 'Client',  label: 'Postal code' },
+  { key: 'country',       group: 'Client',  label: 'Country' },
+  { key: 'candidate',     group: 'Work',    label: 'Candidate / Role', hint: 'Shown in the first column' },
+  { key: 'workOrder',     group: 'Work',    label: 'Work order' },
+  { key: 'purchaseOrder', group: 'Work',    label: 'Purchase order' },
+  { key: 'workDate',      group: 'Work',    label: 'Work date', hint: 'Period column' },
+  { key: 'lineType',      group: 'Work',    label: 'Line type', required: true, hint: 'e.g. Regular, Overtime' },
+  { key: 'units',         group: 'Work',    label: 'Units', hint: 'Blank or invalid = 0' },
+  { key: 'unitPrice',     group: 'Work',    label: 'Rate', required: true, hint: 'Blank or invalid = 0' },
+  { key: 'taxCode',       group: 'Other',   label: 'Tax code', hint: 'Blank or unknown = EXEMPT' },
 ];
 
-/** Output text for each language. */
+/** Invoice-level fields (besides the address) taken from the first row of each invoice that has them. */
+const INVOICE_FIELDS = ['clientNumber', 'invoiceDate', 'dueDate', 'customerName', 'attention'];
+/** Address parts, always taken together from one row. */
+const ADDRESS_KEYS = ['address1', 'address2', 'address3', 'address4', 'city', 'province', 'postalCode', 'country'];
+
+/** Editable sheet, version 3: column (0-based) of each field on the Invoices tab. */
+const SHEET_VERSION = '3';
+const SHEET_MAP = {
+  invoiceNumber: 0, clientNumber: 1, invoiceDate: 2, dueDate: 3, customerName: 4, attention: 5,
+  address1: 6, address2: 7, address3: 8, address4: 9, city: 10, province: 11, postalCode: 12, country: 13,
+  candidate: 14, workOrder: 15, purchaseOrder: 16, workDate: 17, lineType: 18, units: 19, unitPrice: 20,
+  taxCode: 22,
+};
+const SHEET_AMOUNT_COL = 21;   // V
+const SHEET_GROUP_COL = 23;    // X
+const SHEET_DETAIL_START = 24; // Y
+const SHEET_BASE_WIDTH = 24;   // A–X, before the extra details
+
+/** Rows of the editable "Settings" tab, in order. */
+const SETTING_KEYS = ['language', 'outputMode', 'combineEmployees'];
+
+// ---------------------------------------------------------------------------
+// Taxes
+// ---------------------------------------------------------------------------
+
+/** The editable rates (percent), stored once and shared by all users. QST = GST + PST. */
+const TAX_RATE_KEYS = ['GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'PST'];
+const DEFAULT_TAX_RATES = { GST: 5, HST: 15, NSHST: 14, ONHST: 13, PEI: 15, PST: 9.975 };
+const TAX_RATES_PROP = 'taxRates';
+
+/**
+ * Tax codes accepted in the data. `parts` are the tax lines printed under the
+ * subtotal (each one a key of the rates above). PST is a rate, not a code.
+ */
+const TAX_CODES = {
+  EXEMPT: { parts: [], aliases: ['EXEMPT'] },
+  GST:    { parts: ['GST'], aliases: ['GST', 'TPS'] },
+  HST:    { parts: ['HST'], aliases: ['HST', 'TVH'] },
+  NSHST:  { parts: ['NSHST'], aliases: ['NSHST', 'NETVH'] },
+  ONHST:  { parts: ['ONHST'], aliases: ['ONHST', 'ONTVH'] },
+  PEI:    { parts: ['PEI'], aliases: ['PEI', 'IPE'] },
+  QST:    { parts: ['GST', 'PST'], aliases: ['QST'] },
+};
+const TAX_CODE_ORDER = ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'];
+
+// ---------------------------------------------------------------------------
+// Page layout (points, Letter portrait). Estimates used to split invoices into
+// pages; tune after checking real PDFs from Google's converter.
+// ---------------------------------------------------------------------------
+// Calibrated against Chrome's rendering of the samples (measured: plain line 17.4pt,
+// line with 2 details 37.7pt, column headings 19pt, group heading 17.5pt, condensed
+// header 54pt, footer ~112pt), plus a safety margin for Google's converter.
+const PAGE = {
+  HEIGHT: 680,          // height of each page block (Letter is 792pt; the rest is margin)
+  NUMBER_ROW: 18,       // "Page X of Y" row
+  COL_HEADER: 21,       // column heading row of the body table
+  GROUP_ROW: 19,        // a group heading row
+  LINE_PAD: 8,          // padding of a line row
+  TEXT_LINE: 10.5,      // one line of 8.5pt text
+  DETAIL_LINE: 10,      // one extra-detail line (7.5pt)
+  CONDENSED_HEADER: 58, // header on pages 2+
+  SAFETY: 14,           // spare room on every page
+};
+
+// ---------------------------------------------------------------------------
+// Wording
+// ---------------------------------------------------------------------------
+
 const I18N = {
   en: {
     locale: 'en',
-    invoice: 'INVOICE',
-    invoiceNo: 'Invoice #',
-    date: 'Date',
-    due: 'Due',
-    billTo: 'Bill to',
-    description: 'Description',
-    qty: 'Hours',
-    unitPrice: 'Rate',
-    workDate: 'Date',
-    period: 'Period',
-    labelSep: ': ',
-    monthsShort: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-    amount: 'Amount',
+    headerLabels: ['Invoice #', 'Client #', 'Invoice Date', 'Payment Due Date'],
+    attn: 'ATTN:',
+    confidential: 'PRIVATE & CONFIDENTIAL',
+    columns: ['Candidate', 'Work Order', 'Purchase Order', 'Period', 'Type', 'Unit(s)', 'Rate', 'Amount'],
+    summaryTitle: 'Units summary',
+    summaryCols: ['Type', 'Unit(s)'],
+    other: 'Other',
     subtotal: 'Subtotal',
-    tax: 'Tax',
-    totalDue: 'Total due',
-    notes: 'Notes',
+    total: 'Total (CAD)',
+    taxes: { EXEMPT: 'EXEMPT', GST: 'GST', PST: 'PST', HST: 'HST', NSHST: 'NSHST', ONHST: 'ONHST', PEI: 'PEI' },
+    taxCodes: ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'],
+    gov: [['gstHst', 'HST/GST # '], ['qst', 'QST # ']],
+    phonePrefix: 'T. ',
+    continued: '(continued)',
+    page: (n, of) => 'Page ' + n + ' of ' + of,
+    groupDefault: 'Group',
+    detailDefault: 'Detail ',
     fileInvoice: 'Invoice',
     fileAll: 'All invoices',
-    months: ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-             'August', 'September', 'October', 'November', 'December'],
-    formatDate: (y, m, d, months) => months[m - 1] + ' ' + d + ', ' + y,
     email: {
       subjectOne: 'Your invoice PDF is ready',
       subjectMany: n => 'Your ' + n + ' invoice PDFs are ready',
       subjectCombined: n => 'Your invoice PDF is ready (' + n + ' invoices)',
-      intro: (n, file) => n + ' invoice' + (n === 1 ? ' was' : 's were') +
-        ' created from <strong>' + file + '</strong>.',
+      intro: (n, file) => n + ' invoice' + (n === 1 ? ' was' : 's were') + ' created from <strong>' + file + '</strong>.',
       openPdf: 'Open the PDF in Google Drive',
       openZip: 'Download all invoices (ZIP)',
       openFolder: 'Open the Drive folder',
+      originalData: 'Original data file',
       listTitle: 'Invoices',
       more: n => '…and ' + n + ' more in the Drive folder.',
       reference: 'Reference',
@@ -126,27 +180,22 @@ const I18N = {
       fileName: src => 'Invoices - ' + src + ' (editable)',
       itemsTab: 'Invoices',
       settingsTab: 'Settings',
-      headers: ['Invoice #', 'Invoice date', 'Due date', 'Client', 'Client email', 'Client address',
-                'Employee', 'Work date', 'Role / description', 'Hours', 'Pay rate', 'Amount', 'Tax rate (%)', 'Notes'],
-      note: 'One row per day / entry. Rows with the same invoice number make up one invoice.\n\n' +
-        'Invoice details (dates, client, tax rate, notes) are read from the FIRST row of each invoice.\n\n' +
-        'Amount is calculated automatically. Write dates as yyyy-mm-dd.\n\n' +
-        'Columns O to X are extra details printed under each line item. The header is the label: rename it to ' +
-        'change the label, or type a header in an empty column (up to X) to add a detail.\n\n' +
+      headers: ['Invoice #', 'Client #', 'Invoice date', 'Payment due date', 'Client', 'ATTN',
+                'Address 1', 'Address 2', 'Address 3', 'Address 4', 'City', 'State / Province', 'Postal code', 'Country',
+                'Candidate / Role', 'Work order', 'Purchase order', 'Work date', 'Line type', 'Units', 'Rate', 'Amount', 'Tax code'],
+      note: 'One row per record. Rows with the same invoice number make up one invoice.\n\n' +
+        'Invoice details (client #, dates, client, ATTN, address, tax code) are read from the FIRST row of each invoice ' +
+        'that has them. The address (columns G–N) is always taken from one row.\n\n' +
+        'Amount is calculated automatically. Units or Rate that are blank or not numbers count as 0. Write dates as yyyy-mm-dd.\n\n' +
+        'Column X groups line items under a heading: its header is the heading label (leave it blank for no groups).\n\n' +
+        'Columns Y to AH are extra details printed under each line item. The header is the label: rename it to change the ' +
+        'label, or type a header in an empty column (up to AH) to add a detail.\n\n' +
         'After editing, use the "Rebuild PDF" link on the Settings tab.',
       settingHeader: ['Setting', 'Value', 'Help'],
       settings: {
         language: ['Invoice language', 'en = English, fr = French'],
         outputMode: ['PDF output', 'combined = one PDF with every invoice; separate = one PDF per invoice'],
-        combineEmployees: ['Combine employee lines', 'yes = one line per employee with the date range; no = one line per row'],
-        companyName: ['Business name', ''],
-        companyAddress: ['Business address', ''],
-        companyEmail: ['Business email', ''],
-        currency: ['Currency symbol', 'e.g. $, €, £'],
-        defaultTaxRate: ['Default tax rate (%)', 'Used for invoices with no tax rate on the Invoices tab'],
-        taxName: ['Tax name', 'Optional, e.g. GST or TPS + TVQ'],
-        accentColor: ['Accent color', 'Hex color, e.g. #1f4e79'],
-        footer: ['Footer / payment terms', ''],
+        combineEmployees: ['Combine employee lines', 'yes = one line per candidate with the date range; no = one line per row'],
       },
       rebuild: 'Rebuild PDF after editing',
       rebuildLabel: 'Rebuild PDF',
@@ -157,37 +206,34 @@ const I18N = {
   },
   fr: {
     locale: 'fr',
-    invoice: 'FACTURE',
-    invoiceNo: 'N° de facture',
-    date: 'Date',
-    due: 'Échéance',
-    billTo: 'Facturer à',
-    description: 'Description',
-    qty: 'Heures',
-    unitPrice: 'Taux',
-    workDate: 'Date',
-    period: 'Période',
-    labelSep: '\u00A0: ',
-    monthsShort: ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'],
-    amount: 'Montant',
+    headerLabels: ['N° de facture', 'N° de client', 'Date de facturation', 'Paiement dû au plus tard'],
+    attn: 'ATTN:',
+    confidential: 'PRIVÉ ET CONFIDENTIEL',
+    columns: ['Candidat', 'Référence', 'Bon de commande', 'Période', 'Type', 'Unité(s)', 'Taux', 'Montant'],
+    summaryTitle: 'Sommaire des unités',
+    summaryCols: ['Type', 'Unité(s)'],
+    other: 'Autre',
     subtotal: 'Sous-total',
-    tax: 'Taxes',
-    totalDue: 'Total à payer',
-    notes: 'Remarques',
+    total: 'Total (CAD)',
+    taxes: { EXEMPT: 'EXEMPT', GST: 'TPS', PST: 'TVQ', HST: 'TVH', NSHST: 'NETVH', ONHST: 'ONTVH', PEI: 'IPE' },
+    taxCodes: ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'],
+    gov: [['gstHst', 'TVH/TPS # '], ['qst', 'TVQ # '], ['quebecPermit', 'Permis QC ']],
+    phonePrefix: 'T. ',
+    continued: '(suite)',
+    page: (n, of) => 'Page ' + n + ' de ' + of,
+    groupDefault: 'Groupe',
+    detailDefault: 'Détail ',
     fileInvoice: 'Facture',
     fileAll: 'Toutes les factures',
-    months: ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet',
-             'août', 'septembre', 'octobre', 'novembre', 'décembre'],
-    formatDate: (y, m, d, months) => (d === 1 ? '1er' : d) + ' ' + months[m - 1] + ' ' + y,
     email: {
       subjectOne: 'Votre facture PDF est prête',
       subjectMany: n => 'Vos ' + n + ' factures PDF sont prêtes',
       subjectCombined: n => 'Votre PDF de factures est prêt (' + n + ' factures)',
-      intro: (n, file) => n + ' facture' + (n === 1 ? ' a été créée' : 's ont été créées') +
-        ' à partir de <strong>' + file + '</strong>.',
+      intro: (n, file) => n + ' facture' + (n === 1 ? ' a été créée' : 's ont été créées') + ' à partir de <strong>' + file + '</strong>.',
       openPdf: 'Ouvrir le PDF dans Google Drive',
       openZip: 'Télécharger toutes les factures (ZIP)',
       openFolder: 'Ouvrir le dossier Drive',
+      originalData: 'Fichier de données d\'origine',
       listTitle: 'Factures',
       more: n => '…et ' + n + ' autre' + (n === 1 ? '' : 's') + ' dans le dossier Drive.',
       reference: 'Référence',
@@ -202,27 +248,23 @@ const I18N = {
       fileName: src => 'Factures - ' + src + ' (modifiable)',
       itemsTab: 'Factures',
       settingsTab: 'Paramètres',
-      headers: ['N° de facture', 'Date de facture', 'Échéance', 'Client', 'Courriel du client', 'Adresse du client',
-                'Employé', 'Date de travail', 'Poste / description', 'Heures', 'Taux', 'Montant', 'Taux de taxe (%)', 'Remarques'],
-      note: 'Une ligne par jour / entrée. Les lignes ayant le même numéro de facture forment une seule facture.\n\n' +
-        'Les détails de la facture (dates, client, taux de taxe, remarques) sont lus sur la PREMIÈRE ligne de chaque facture.\n\n' +
-        'Le montant est calculé automatiquement. Écrivez les dates au format aaaa-mm-jj.\n\n' +
-        'Les colonnes O à X sont des détails supplémentaires imprimés sous chaque article. L\'en-tête sert d\'étiquette : ' +
-        'renommez-le pour changer l\'étiquette, ou tapez un en-tête dans une colonne vide (jusqu\'à X) pour ajouter un détail.\n\n' +
+      headers: ['N° de facture', 'N° de client', 'Date de facturation', 'Paiement dû au plus tard', 'Client', 'ATTN',
+                'Adresse 1', 'Adresse 2', 'Adresse 3', 'Adresse 4', 'Ville', 'Province / État', 'Code postal', 'Pays',
+                'Candidat / Poste', 'Référence', 'Bon de commande', 'Date de travail', 'Type de ligne', 'Unités', 'Taux', 'Montant', 'Code de taxe'],
+      note: 'Une ligne par enregistrement. Les lignes ayant le même numéro de facture forment une seule facture.\n\n' +
+        'Les détails de la facture (n° de client, dates, client, ATTN, adresse, code de taxe) sont lus sur la PREMIÈRE ligne ' +
+        'de chaque facture qui les contient. L\'adresse (colonnes G à N) est toujours prise sur une seule ligne.\n\n' +
+        'Le montant est calculé automatiquement. Des unités ou un taux vides ou non numériques comptent pour 0. ' +
+        'Écrivez les dates au format aaaa-mm-jj.\n\n' +
+        'La colonne X regroupe les articles sous un titre : son en-tête sert d\'étiquette (laissez-le vide pour ne pas regrouper).\n\n' +
+        'Les colonnes Y à AH sont des détails supplémentaires imprimés sous chaque article. L\'en-tête sert d\'étiquette : ' +
+        'renommez-le pour changer l\'étiquette, ou tapez un en-tête dans une colonne vide (jusqu\'à AH) pour ajouter un détail.\n\n' +
         'Après vos modifications, utilisez le lien « Régénérer le PDF » dans l\'onglet Paramètres.',
       settingHeader: ['Paramètre', 'Valeur', 'Aide'],
       settings: {
         language: ['Langue de la facture', 'en = anglais, fr = français'],
         outputMode: ['Sortie PDF', 'combined = un seul PDF avec toutes les factures; separate = un PDF par facture'],
-        combineEmployees: ['Regrouper par employé', 'yes = une ligne par employé avec la période; no = une ligne par rangée'],
-        companyName: ['Nom de l\'entreprise', ''],
-        companyAddress: ['Adresse de l\'entreprise', ''],
-        companyEmail: ['Courriel de l\'entreprise', ''],
-        currency: ['Symbole monétaire', 'p. ex. $, €, £'],
-        defaultTaxRate: ['Taux de taxe par défaut (%)', 'Utilisé pour les factures sans taux dans l\'onglet Factures'],
-        taxName: ['Nom de la taxe', 'Facultatif, p. ex. TPS + TVQ'],
-        accentColor: ['Couleur d\'accent', 'Couleur hexadécimale, p. ex. #1f4e79'],
-        footer: ['Pied de page / modalités de paiement', ''],
+        combineEmployees: ['Regrouper par candidat', 'yes = une ligne par candidat avec la période; no = une ligne par rangée'],
       },
       rebuild: 'Régénérer le PDF après modification',
       rebuildLabel: 'Régénérer le PDF',
@@ -247,23 +289,32 @@ function doGet(e) {
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-/** Called on page load: field definitions, the user's email and last-used settings. */
+/**
+ * Called on page load: field definitions, the user's email, last-used settings,
+ * presets (and the full default preset, which fills in the form), tax rates.
+ */
 function getConfig() {
-  const saved = PropertiesService.getUserProperties().getProperty(settingsKey_());
+  const props = PropertiesService.getUserProperties();
+  const saved = props.getProperty(settingsKey_());
+  const state = presetState_(props);
+  let parsed = null;
+  try { parsed = saved ? sanitizeFormState_(JSON.parse(saved).mapping, JSON.parse(saved).options) : null; } catch (e) { parsed = null; }
   return {
     fields: FIELDS,
     userEmail: currentUserEmail_(),
-    saved: saved ? JSON.parse(saved) : null,
+    saved: parsed,
+    presets: state.presets,
+    defaultName: state.defaultName,
+    defaultPreset: state.defaultName ? readPreset_(props, state.defaultName) : null,
+    tax: taxState_(),
+    taxCodes: { en: I18N.en.taxCodes, fr: I18N.fr.taxCodes },
   };
 }
 
-/** Returns the first few rows of the uploaded file so users can pick columns. */
+/** Returns the first rows of the uploaded file (hidden Excel rows left out) so users can pick columns. */
 function previewFile(file) {
   const rows = readRows_(file, 'preview-' + newJobId_()).rows;
-  const width = Math.min(
-    MAX_PREVIEW_COLS,
-    rows.reduce((w, r) => Math.max(w, r.length), 0)
-  );
+  const width = Math.min(MAX_PREVIEW_COLS, rows.reduce((w, r) => Math.max(w, r.length), 0));
   const columns = [];
   for (let i = 0; i < width; i++) columns.push(indexToCol_(i));
   return {
@@ -274,64 +325,70 @@ function previewFile(file) {
 }
 
 /**
- * Main action. request = {
- *   file:    { name, base64 },
- *   mapping: { invoiceNumber: 'A', ... },
- *   options: { hasHeader, numberFormat, language, outputMode, recipient,
- *              companyName, companyAddress, companyEmail, currency,
- *              defaultTaxRate, taxName, accentColor, footer }
- * }
- * Everything the job needs is in the request, so separate submissions
- * (from different users or from the same user in two tabs) never share data.
+ * Main action. request = { file: { name, base64 }, mapping: { invoiceNumber: 'A', ..., details, groupBy },
+ *   options: { hasHeader, dateFormat, numberFormat, language, outputMode, combineEmployees } }
+ * The files and the email always go to the signed-in user; any recipient in the request is ignored.
  */
 function generateInvoices(request) {
   request = request || {};
+  const recipient = currentUserEmail_();
+  if (!recipient) throw new Error('We couldn\'t confirm your Google account. Reload the page and sign in again.');
   const jobId = newJobId_();
-  const mapping = normalizeMapping_(request.mapping || {});
-  const opts = normalizeOptions_(request.options || {});
-  const L = I18N[opts.language];
-  if (!request.file || !request.file.base64) throw new Error('Please choose a CSV or XLSX file first.');
+  const parsed = parseUpload_(request, jobId);
   saveSettings_(request.mapping, request.options);
-
-  const data = readRows_(request.file, jobId);
-  let rows = data.rows;
-  const headerRow = opts.hasHeader ? (rows[0] || []) : [];
-  if (opts.hasHeader) rows = rows.slice(1);
-  opts.decimalComma = opts.numberFormat === 'auto' ? data.decimalComma : opts.numberFormat === 'comma';
-  // Extra-detail labels: what the user typed, else the column's header, else "Detail n".
-  mapping.details.forEach((d, n) => {
-    d.label = d.label || String(headerRow[d.index] == null ? '' : headerRow[d.index]).trim() ||
-      (opts.language === 'fr' ? 'Détail ' : 'Detail ') + (n + 1);
-  });
-
-  const grouped = groupInvoices_(rows, mapping, opts);
-  if (!grouped.invoices.length) {
-    throw new Error('No invoices could be built from this file. Check your column letters' +
-      (grouped.skipped.length ? ' — first problem: row ' + grouped.skipped[0].row + ': ' + grouped.skipped[0].reason : '.'));
-  }
 
   const sourceName = String(request.file.name || 'upload');
   const folder = createJobFolder_(sourceName, jobId);
   let ss, built;
   try {
+    const original = saveOriginal_(folder, request.file);
     // 1) Write the editable spreadsheet, 2) build the PDFs *from* it, so the two always match.
-    ss = createInvoiceSpreadsheet_(folder, grouped, opts, L, jobId, sourceName);
+    ss = createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, original.getId());
     built = renderFromSpreadsheet_(ss);
   } catch (e) {
     folder.setTrashed(true); // don't leave half-finished jobs behind
     throw e;
   }
 
-  const warnings = [];
-  shareWithRecipient_(folder, opts.recipient, warnings);
+  const warnings = built.warnings.slice();
   let emailedTo = null;
   try {
-    sendResultEmail_(opts.recipient, built, ss, false);
-    emailedTo = opts.recipient;
+    sendResultEmail_(recipient, built, ss, false);
+    emailedTo = recipient;
   } catch (e) {
     warnings.push('The files were created, but the email could not be sent: ' + e.message);
   }
-  return jobResponse_(built, ss, grouped.skipped.concat(built.skipped), emailedTo, warnings, false);
+  return jobResponse_(built, ss, parsed.grouped.skipped, parsed.notes, emailedTo, warnings, false);
+}
+
+/**
+ * Validates the request and reads the uploaded file into invoices.
+ * Returns { mapping, opts, grouped, notes }. No Drive files are created here.
+ */
+function parseUpload_(request, jobId) {
+  const mapping = normalizeMapping_(request.mapping || {});
+  const opts = normalizeOptions_(request.options || {});
+  const L = I18N[opts.language];
+  if (!request.file || !request.file.base64) throw new Error('Please choose a CSV or XLSX file first.');
+
+  const data = readRows_(request.file, jobId);
+  let rows = data.rows, rowNums = data.rowNumbers;
+  const headerRow = opts.hasHeader ? (rows[0] || []) : [];
+  if (opts.hasHeader) { rows = rows.slice(1); rowNums = rowNums.slice(1); }
+  opts.decimalComma = opts.numberFormat === 'auto' ? data.decimalComma : opts.numberFormat === 'comma';
+  opts.taxRates = getTaxRates_().rates;
+  const header = i => String(headerRow[i] == null ? '' : headerRow[i]).trim();
+  // Labels: what the user typed, else the column's header, else a default.
+  mapping.details.forEach((d, n) => { d.label = d.label || header(d.index) || L.detailDefault + (n + 1); });
+  if (mapping.groupBy) mapping.groupBy.label = mapping.groupBy.label || header(mapping.groupBy.index) || L.groupDefault;
+
+  const grouped = groupInvoices_(rows, mapping, opts, rowNums);
+  if (!grouped.invoices.length) {
+    throw new Error('No invoices could be built from this file. Check your column letters' +
+      (grouped.skipped.length ? ' — first problem: row ' + grouped.skipped[0].row + ': ' + grouped.skipped[0].reason : '.'));
+  }
+  const notes = (data.notes || []).concat(grouped.notes);
+  return { mapping: mapping, opts: opts, grouped: grouped, notes: notes };
 }
 
 /**
@@ -349,8 +406,11 @@ function rebuildFromSpreadsheet(request) {
   } catch (e) {
     throw new Error('Could not open that spreadsheet. Check the link, and make sure you have edit access to it.');
   }
-  if (!readMeta_(ss)) {
-    throw new Error('That spreadsheet was not created by Invoice PDF Generator, so it cannot be rebuilt.');
+  const meta = readMeta_(ss);
+  if (!meta) throw new Error('That spreadsheet was not created by Invoice PDF Generator, so it cannot be rebuilt.');
+  if (String(meta.version) !== SHEET_VERSION) {
+    throw new Error('This spreadsheet was made with an older version of Invoice PDF Generator, so it can\'t be rebuilt. ' +
+      'Generate it again from the original file.');
   }
 
   claimSpreadsheet_(ss); // stops two people (or tabs) rebuilding the same spreadsheet at once
@@ -361,7 +421,7 @@ function rebuildFromSpreadsheet(request) {
     releaseSpreadsheet_(ss);
   }
 
-  const warnings = [];
+  const warnings = built.warnings.slice();
   let emailedTo = null;
   if (request.notify) {
     const me = currentUserEmail_();
@@ -373,10 +433,14 @@ function rebuildFromSpreadsheet(request) {
       warnings.push('The PDF was rebuilt, but the email could not be sent: ' + e.message);
     }
   }
-  return jobResponse_(built, ss, built.skipped, emailedTo, warnings, true);
+  return jobResponse_(built, ss, built.skipped, built.notes, emailedTo, warnings, true);
 }
 
-function jobResponse_(built, ss, skipped, emailedTo, warnings, rebuilt) {
+function jobResponse_(built, ss, skipped, notes, emailedTo, warnings, rebuilt) {
+  let originalUrl = null;
+  if (built.meta.originalId) {
+    try { originalUrl = DriveApp.getFileById(built.meta.originalId).getUrl(); } catch (e) { originalUrl = null; }
+  }
   return {
     rebuilt: rebuilt,
     jobId: built.meta.jobId,
@@ -384,13 +448,388 @@ function jobResponse_(built, ss, skipped, emailedTo, warnings, rebuilt) {
     folderUrl: built.folder.getUrl(),
     sheetUrl: ss.getUrl(),
     rebuildUrl: rebuildUrl_(ss.getId()),
+    originalUrl: originalUrl,
     zipUrl: built.output.zipUrl,
     combinedUrl: built.output.combinedUrl,
     invoices: built.output.invoices,
     skipped: skipped,
+    notes: notes,
     emailedTo: emailedTo,
     warnings: warnings,
   };
+}
+
+/** Saves the uploaded file, byte for byte, in the job folder. */
+function saveOriginal_(folder, file) {
+  const name = String(file.name || 'upload');
+  const lower = name.toLowerCase();
+  const mime = lower.endsWith('.xlsx') ? MimeType.MICROSOFT_EXCEL
+    : lower.endsWith('.xls') ? MimeType.MICROSOFT_EXCEL_LEGACY
+    : MimeType.CSV;
+  return folder.createFile(Utilities.newBlob(Utilities.base64Decode(file.base64), mime, ORIGINAL_PREFIX + name));
+}
+
+// ---------------------------------------------------------------------------
+// Form presets
+// ---------------------------------------------------------------------------
+//
+// A preset is a named snapshot of the form (column letters, extra details,
+// grouping and options). Presets are stored in the user's own UserProperties,
+// one property per preset, so they are private to each user.
+// One preset can be the default: it fills in the form when the page opens.
+
+/** Returns { presets: [{ name, updated, isDefault }], defaultName }. */
+function listPresets() {
+  return presetState_(PropertiesService.getUserProperties());
+}
+
+/** Returns one preset { name, mapping, options, headers, updated }, or throws if it doesn't exist. */
+function getPreset(name) {
+  const preset = readPreset_(PropertiesService.getUserProperties(), name);
+  if (!preset) throw new Error('The preset "' + String(name || '') + '" no longer exists.');
+  const form = sanitizeFormState_(preset.mapping, preset.options); // upgrades presets saved by older versions
+  return Object.assign({}, preset, form);
+}
+
+/**
+ * Saves the form as a preset. Saving under an existing name (any capitalisation)
+ * replaces that preset. request = { name, mapping, options, headers, makeDefault }
+ */
+function savePreset(request) {
+  request = request || {};
+  const props = PropertiesService.getUserProperties();
+  const name = cleanPresetName_(request.name);
+  const key = presetKey_(name);
+  const existing = readPreset_(props, name);
+  if (!existing && presetState_(props).presets.length >= MAX_PRESETS) {
+    throw new Error('You already have ' + MAX_PRESETS + ' presets. Delete one before saving a new one.');
+  }
+
+  const form = sanitizeFormState_(request.mapping, request.options);
+  let headers = sanitizeHeaders_(request.headers, form.mapping);
+  // Updating a preset without a file loaded keeps the headers it remembered.
+  if (!Object.keys(headers).length && existing && existing.headers) {
+    headers = sanitizeHeaders_(existing.headers, form.mapping);
+  }
+  const preset = { name: name, mapping: form.mapping, options: form.options, headers: headers,
+                   updated: new Date().toISOString() };
+  const json = JSON.stringify(preset);
+  if (Utilities.newBlob(json).getBytes().length > MAX_PRESET_BYTES) {
+    throw new Error('This preset is too large to save. Shorten the extra-detail labels and try again.');
+  }
+  props.setProperty(key, json);
+  if (request.makeDefault) props.setProperty(presetDefaultKey_(), key);
+  return Object.assign(presetState_(props), { saved: preset, replaced: !!existing });
+}
+
+/** Deletes a preset (and clears the default if it was the default). */
+function deletePreset(name) {
+  const props = PropertiesService.getUserProperties();
+  const key = presetKey_(cleanPresetName_(name));
+  props.deleteProperty(key);
+  if (props.getProperty(presetDefaultKey_()) === key) props.deleteProperty(presetDefaultKey_());
+  return presetState_(props);
+}
+
+/** Makes a preset the default (fills in the form on page load). An empty name clears the default. */
+function setDefaultPreset(name) {
+  const props = PropertiesService.getUserProperties();
+  if (!String(name || '').trim()) {
+    props.deleteProperty(presetDefaultKey_());
+  } else {
+    const clean = cleanPresetName_(name);
+    if (!readPreset_(props, clean)) throw new Error('The preset "' + clean + '" no longer exists.');
+    props.setProperty(presetDefaultKey_(), presetKey_(clean));
+  }
+  return presetState_(props);
+}
+
+function presetPrefix_() {
+  return 'preset:' + currentUserEmail_().toLowerCase() + ':';
+}
+function presetKey_(name) {
+  return presetPrefix_() + encodeURIComponent(String(name).trim().toLowerCase());
+}
+function presetDefaultKey_() {
+  return 'presetDefault:' + currentUserEmail_().toLowerCase();
+}
+
+function cleanPresetName_(name) {
+  const s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
+  if (!s) throw new Error('Please give the preset a name.');
+  if (s.length > MAX_PRESET_NAME) throw new Error('Preset names can be up to ' + MAX_PRESET_NAME + ' characters.');
+  return s;
+}
+
+function readPreset_(props, name) {
+  let key;
+  try { key = presetKey_(cleanPresetName_(name)); } catch (e) { return null; }
+  const json = props.getProperty(key);
+  if (!json) return null;
+  try {
+    const p = JSON.parse(json);
+    return Object.assign({}, p, sanitizeFormState_(p.mapping, p.options));
+  } catch (e) { return null; }
+}
+
+/** All of the user's presets, sorted by name, plus the default preset's name. */
+function presetState_(props) {
+  const all = props.getProperties();
+  const prefix = presetPrefix_();
+  const defaultKey = all[presetDefaultKey_()] || '';
+  let defaultName = '';
+  const presets = [];
+  Object.keys(all).forEach(k => {
+    if (k.indexOf(prefix) !== 0) return;
+    let p;
+    try { p = JSON.parse(all[k]); } catch (e) { return; }
+    if (!p || !p.name) return;
+    const isDefault = k === defaultKey;
+    if (isDefault) defaultName = p.name;
+    presets.push({ name: p.name, updated: p.updated || '', isDefault: isDefault });
+  });
+  presets.sort((a, b) => a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1);
+  return { presets: presets, defaultName: defaultName };
+}
+
+/**
+ * Keeps only the known form fields, with length limits, in the shape the page
+ * sends to generateInvoices(). Used for presets and last-used settings. Values
+ * saved by older versions are upgraded (e.g. Employee name → Candidate / Role);
+ * removed fields (business details, currency, accent colour, recipient...) are dropped.
+ */
+function sanitizeFormState_(rawMapping, rawOptions) {
+  const m = rawMapping || {}, o = rawOptions || {};
+  const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
+  const letter = v => { const s = str(v, 3).toUpperCase(); return /^[A-Z]{1,3}$/.test(s) ? s : ''; };
+  const oneOf = (v, list, def) => list.indexOf(String(v)) !== -1 ? String(v) : def;
+
+  const mapping = {};
+  FIELDS.forEach(f => { mapping[f.key] = letter(m[f.key]); });
+  if (!mapping.candidate) mapping.candidate = letter(m.employeeName) || letter(m.description);
+  if (!mapping.units) mapping.units = letter(m.quantity);
+  if (!mapping.address1) mapping.address1 = letter(m.customerAddress);
+  mapping.details = [];
+  const details = Array.isArray(m.details) ? m.details : [];
+  for (let n = 0; n < MAX_DETAILS; n++) {
+    const d = details[n] || {};
+    mapping.details.push({ col: letter(d.col), label: str(d.label, 60) });
+  }
+  const g = m.groupBy || {};
+  mapping.groupBy = { col: letter(g.col), label: str(g.label, 60) };
+
+  const options = {
+    hasHeader: o.hasHeader == null ? true : !!o.hasHeader,
+    combineEmployees: !!o.combineEmployees,
+    dateFormat: oneOf(o.dateFormat, ['auto', 'mdy', 'dmy'], 'auto'),
+    numberFormat: oneOf(o.numberFormat, ['auto', 'dot', 'comma'], 'auto'),
+    language: oneOf(o.language, ['en', 'fr'], 'en'),
+    outputMode: oneOf(o.outputMode, ['combined', 'separate'], 'combined'),
+  };
+  return { mapping: mapping, options: options };
+}
+
+/**
+ * The header text the preset expects in each mapped column, e.g. { A: 'Invoice #' }.
+ * The page compares it with each new upload to catch a file in a different layout.
+ */
+function sanitizeHeaders_(raw, mapping) {
+  const used = {};
+  FIELDS.forEach(f => { if (mapping[f.key]) used[mapping[f.key]] = true; });
+  mapping.details.forEach(d => { if (d.col) used[d.col] = true; });
+  if (mapping.groupBy && mapping.groupBy.col) used[mapping.groupBy.col] = true;
+  const out = {};
+  if (raw && typeof raw === 'object') {
+    Object.keys(raw).forEach(col => {
+      const c = String(col).toUpperCase();
+      const text = String(raw[col] == null ? '' : raw[col]).trim().slice(0, 100);
+      if (used[c] && text) out[c] = text;
+    });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Tax rates (shared by all users; only admins can change them)
+// ---------------------------------------------------------------------------
+
+/** Current rates (stored rates merged over the defaults), plus who changed them last. */
+function getTaxRates_() {
+  let stored = null;
+  try { stored = JSON.parse(PropertiesService.getScriptProperties().getProperty(TAX_RATES_PROP) || 'null'); } catch (e) { stored = null; }
+  const rates = Object.assign({}, DEFAULT_TAX_RATES);
+  if (stored && stored.rates) {
+    TAX_RATE_KEYS.forEach(k => {
+      const v = Number(stored.rates[k]);
+      if (stored.rates[k] !== '' && stored.rates[k] != null && isFinite(v) && v >= 0 && v <= 100) rates[k] = v;
+    });
+  }
+  return { rates: rates, updated: (stored && stored.updated) || '', updatedBy: (stored && stored.updatedBy) || '' };
+}
+
+/** What the Tax rates card shows. */
+function taxState_() {
+  const t = getTaxRates_();
+  return {
+    rates: t.rates,
+    defaults: DEFAULT_TAX_RATES,
+    updated: t.updated,
+    updatedBy: t.updatedBy,
+    isAdmin: isTaxAdmin_(),
+    rows: TAX_RATE_KEYS.map(k => ({ key: k, en: I18N.en.taxes[k], fr: I18N.fr.taxes[k] })),
+  };
+}
+
+/** Admin emails from Config.gs (CONFIG.TAX_ADMINS) plus the optional script property TAX_ADMINS. */
+function taxAdmins_() {
+  const fromConfig = (cfg_().TAX_ADMINS || []).map(String);
+  let fromProp = '';
+  try { fromProp = PropertiesService.getScriptProperties().getProperty('TAX_ADMINS') || ''; } catch (e) { fromProp = ''; }
+  return fromConfig.concat(fromProp.split(/[,;\s]+/))
+    .map(s => s.trim().toLowerCase()).filter(s => s.indexOf('@') > 0);
+}
+
+function isTaxAdmin_() {
+  const me = currentUserEmail_().toLowerCase();
+  return !!me && taxAdmins_().indexOf(me) !== -1;
+}
+
+function requireTaxAdmin_() {
+  if (!isTaxAdmin_()) throw new Error('Tax rates can only be changed by an admin.');
+}
+
+/** Saves new rates (admins only). rates = { GST: '5', HST: '15', ... } as percentages. */
+function saveTaxRates(rates) {
+  requireTaxAdmin_();
+  const clean = {}, errors = [];
+  TAX_RATE_KEYS.forEach(k => {
+    const s = String(rates && rates[k] != null ? rates[k] : '').trim();
+    if (!/^\d{1,3}(\.\d{1,3})?$/.test(s) || Number(s) > 100) {
+      errors.push(k + ': "' + s + '" must be a number from 0 to 100 with up to 3 decimals.');
+    } else {
+      clean[k] = Number(s);
+    }
+  });
+  if (errors.length) throw new Error(errors.join(' '));
+  writeTaxRates_(clean);
+  return taxState_();
+}
+
+/** Restores the starting rates (admins only). */
+function resetTaxRates() {
+  requireTaxAdmin_();
+  writeTaxRates_(Object.assign({}, DEFAULT_TAX_RATES));
+  return taxState_();
+}
+
+function writeTaxRates_(rates) {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    PropertiesService.getScriptProperties().setProperty(TAX_RATES_PROP, JSON.stringify({
+      rates: rates, updated: new Date().toISOString(), updatedBy: currentUserEmail_(),
+    }));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** Accepts English or French codes, any capitalisation, spaces/hyphens ignored. Returns the code key or null. */
+function normalizeTaxCode_(raw) {
+  const s = String(raw == null ? '' : raw).toUpperCase().replace(/[\s\-_.]/g, '');
+  if (!s) return null;
+  for (let i = 0; i < TAX_CODE_ORDER.length; i++) {
+    if (TAX_CODES[TAX_CODE_ORDER[i]].aliases.indexOf(s) !== -1) return TAX_CODE_ORDER[i];
+  }
+  return null;
+}
+
+/** Tax lines for an invoice: [{ key, ratePct, amount }]. EXEMPT gives one $0.00 line. */
+function computeTaxes_(code, subtotal, rates) {
+  const def = TAX_CODES[code] || TAX_CODES.EXEMPT;
+  if (!def.parts.length) return [{ key: 'EXEMPT', ratePct: null, amount: 0 }];
+  return def.parts.map(p => ({ key: p, ratePct: rates[p], amount: round2_(subtotal * rates[p] / 100) }));
+}
+
+// ---------------------------------------------------------------------------
+// Developer settings (Config.gs): logo, company block, footer, accent colour
+// ---------------------------------------------------------------------------
+
+function cfg_() {
+  return typeof CONFIG !== 'undefined' && CONFIG ? CONFIG : {};
+}
+
+function accent_() {
+  const c = String(cfg_().ACCENT_COLOR || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(c) ? c : DEFAULT_ACCENT;
+}
+
+/** The accent colour mixed with white, for group heading backgrounds. */
+function tint_(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = c => Math.round(c + (255 - c) * amount);
+  const r = mix((n >> 16) & 255), g = mix((n >> 8) & 255), b = mix(n & 255);
+  return '#' + [r, g, b].map(v => ('0' + v.toString(16)).slice(-2)).join('');
+}
+
+const cleanText_ = v => String(v == null ? '' : v).trim();
+const cleanList_ = a => (Array.isArray(a) ? a : []).map(cleanText_).filter(Boolean);
+/** A French value, or the English one when the French one is blank. */
+const pickText_ = (fr, en) => cleanText_(fr) || cleanText_(en);
+const pickList_ = (fr, en) => cleanList_(fr).length ? cleanList_(fr) : cleanList_(en);
+
+/**
+ * Logo, company block, footer and accent colour for one invoice language.
+ * Returns { logo, company: { address, phone, gov }, footer, accent, warnings }.
+ */
+function loadBranding_(lang) {
+  const c = cfg_();
+  const L = I18N[lang];
+  const fr = lang === 'fr';
+  const coEn = (c.COMPANY && c.COMPANY.en) || {};
+  const co = fr ? ((c.COMPANY && c.COMPANY.fr) || {}) : coEn;
+  const nums = c.GOVERNMENT_NUMBERS || {};
+  const ftEn = (c.FOOTER && c.FOOTER.en) || {};
+  const ft = fr ? ((c.FOOTER && c.FOOTER.fr) || {}) : ftEn;
+  const pairs = a => (Array.isArray(a) ? a : [])
+    .map(p => [cleanText_(p && p[0]), cleanText_(p && p[1])]).filter(p => p[0] || p[1]);
+  const logo = loadLogo_();
+  return {
+    logo: logo.dataUri,
+    accent: accent_(),
+    company: {
+      address: fr ? pickList_(co.address, coEn.address) : cleanList_(coEn.address),
+      phone: fr ? pickText_(co.phone, coEn.phone) : cleanText_(coEn.phone),
+      gov: L.gov.map(g => cleanText_(nums[g[0]]) ? g[1] + cleanText_(nums[g[0]]) : '').filter(Boolean),
+    },
+    footer: {
+      paymentTitle: fr ? pickText_(ft.paymentTitle, ftEn.paymentTitle) : cleanText_(ftEn.paymentTitle),
+      bankAddress: fr ? pickList_(ft.bankAddress, ftEn.bankAddress) : cleanList_(ftEn.bankAddress),
+      bankDetails: fr && pairs(ft.bankDetails).length ? pairs(ft.bankDetails) : pairs(ftEn.bankDetails),
+      remittance: fr ? pickText_(ft.remittance, ftEn.remittance) : cleanText_(ftEn.remittance),
+      disclosure: fr ? pickText_(ft.disclosure, ftEn.disclosure) : cleanText_(ftEn.disclosure),
+    },
+    warnings: logo.warning ? [logo.warning] : [],
+  };
+}
+
+/** Reads the PNG logo from Drive once and returns it as a data URI (or a warning). */
+function loadLogo_() {
+  const id = cleanText_(cfg_().LOGO_DRIVE_FILE_ID);
+  if (!id) return { dataUri: '', warning: '' };
+  try {
+    const blob = DriveApp.getFileById(id).getBlob();
+    if (String(blob.getContentType() || '').toLowerCase() !== 'image/png') {
+      return { dataUri: '', warning: 'The logo file isn\'t a PNG, so the invoices were made without it. Ask the developer to check the logo file.' };
+    }
+    const bytes = blob.getBytes();
+    if (bytes.length > MAX_LOGO_BYTES) {
+      return { dataUri: '', warning: 'The logo file is over 2 MB, so the invoices were made without it. Ask the developer to use a smaller PNG.' };
+    }
+    return { dataUri: 'data:image/png;base64,' + Utilities.base64Encode(bytes), warning: '' };
+  } catch (e) {
+    return { dataUri: '', warning: 'The logo couldn\'t be loaded, so the invoices were made without it. Ask the developer to check the logo\'s sharing settings.' };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,93 +838,73 @@ function jobResponse_(built, ss, skipped, emailedTo, warnings, rebuilt) {
 
 /**
  * Creates the editable Google Sheet (Invoices + Settings tabs) inside the job folder.
- * The Invoices tab keeps one row per source row (e.g. per day worked), so single
- * days can be corrected; combining by employee happens when the PDF is built.
+ * The Invoices tab keeps one row per source record; invoice-level details are
+ * written on each invoice's first row only, so one cell fixes the whole invoice.
  */
-function createInvoiceSpreadsheet_(folder, grouped, opts, L, jobId, sourceName) {
-  const S = L.sheet;
-  const invoices = grouped.invoices;
+function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId) {
+  const opts = parsed.opts, grouped = parsed.grouped;
+  const L = I18N[opts.language], S = L.sheet;
   const labels = grouped.detailLabels || [];
+  const groupLabel = parsed.mapping.groupBy ? parsed.mapping.groupBy.label : '';
   const width = SHEET_BASE_WIDTH + labels.length;
+  const accent = accent_();
   const ss = SpreadsheetApp.create(S.fileName(safeName_(sourceName.replace(/\.[^.]+$/, ''))));
   DriveApp.getFileById(ss.getId()).moveTo(folder);
   if (opts.language === 'fr') {
     try { ss.setSpreadsheetLocale('fr_CA'); } catch (e) { /* keep the default locale */ }
   }
 
-  // ---- Invoices tab: one row per entry. Invoice details only on each invoice's first row.
+  // ---- Invoices tab
   const items = ss.getSheets()[0].setName(S.itemsTab);
   const rows = [];
-  invoices.forEach(inv => {
-    const rate = parseNumber_(inv.taxRate, opts.decimalComma);
+  grouped.invoices.forEach(inv => {
     inv.items.forEach((it, j) => {
       const first = j === 0;
+      const head = k => first ? cellText_(inv[k]) : '';
       rows.push([
-        cellText_(inv.number),
-        first ? cellText_(inv.invoiceDate) : '',
-        first ? cellText_(inv.dueDate) : '',
-        first ? cellText_(inv.customerName) : '',
-        first ? cellText_(inv.customerEmail) : '',
-        first ? cellText_(inv.customerAddress) : '',
-        cellText_(it.employee),
-        cellText_(it.workDate),
-        cellText_(it.description),
-        it.quantity,
-        it.unitPrice,
-        '',                                   // Amount: filled by the ARRAYFORMULA below
-        first && !isNaN(rate) ? rate : '',
-        first ? cellText_(inv.notes) : '',
-      ].concat(it.details.map(cellText_)));
+        cellText_(inv.number), head('clientNumber'), head('invoiceDate'), head('dueDate'), head('customerName'), head('attention'),
+      ].concat(ADDRESS_KEYS.map(k => first && inv.address ? cellText_(inv.address[k]) : ''))
+        .concat([
+          cellText_(it.candidate), cellText_(it.workOrder), cellText_(it.purchaseOrder), cellText_(it.workDate),
+          cellText_(it.lineType), it.unitsCell, it.rateCell,
+          '',                                         // Amount: filled by the ARRAYFORMULA below
+          first ? cellText_(inv.taxCodeRaw) : '',
+          groupLabel ? cellText_(it.group) : '',
+        ])
+        .concat(it.details.map(cellText_)));
     });
   });
   // Text format keeps invoice numbers like "00123" and dates exactly as written.
-  items.getRange('A2:I').setNumberFormat('@');
-  items.getRange('N2:X').setNumberFormat('@');
-  items.getRange('K2:L').setNumberFormat('#,##0.00');
-  items.getRange(1, 1, 1, width).setValues([S.headers.concat(labels.map(cellText_))])
-    .setFontWeight('bold').setBackground(opts.accentColor).setFontColor('#ffffff');
+  items.getRange('A2:S').setNumberFormat('@');
+  items.getRange('W2:AH').setNumberFormat('@');
+  items.getRange('T2:T').setNumberFormat('0.###');
+  items.getRange('U2:V').setNumberFormat('#,##0.00');
+  items.getRange(1, 1, 1, width).setValues([S.headers.concat([groupLabel]).concat(labels.map(cellText_))])
+    .setFontWeight('bold').setBackground(accent).setFontColor('#ffffff');
   items.getRange(2, 1, rows.length, width).setValues(rows);
-  items.getRange('L2').setFormula('=ARRAYFORMULA(IF(K2:K="","",IF(J2:J="",1,J2:J)*K2:K))');
-  items.getRange('L1').setBackground('#6b7280'); // grey = calculated column, don't type here
+  items.getRange('V2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IFERROR(VALUE(T2:T),0)*IFERROR(VALUE(U2:U),0)))');
+  items.getRange('V1').setBackground('#6b7280'); // grey = calculated column, don't type here
   items.getRange('A1').setNote(S.note);
   items.setFrozenRows(1);
-  [110, 110, 110, 180, 190, 220, 170, 100, 170, 70, 90, 100, 110, 200].forEach((w, i) => items.setColumnWidth(i + 1, w));
-  for (let c = SHEET_BASE_WIDTH + 1; c <= SHEET_BASE_WIDTH + MAX_DETAILS; c++) items.setColumnWidth(c, 150);
-  items.getRange('F2:F').setWrap(true);
-  items.getRange('N2:N').setWrap(true);
+  items.getRange(2, SHEET_MAP.taxCode + 1, rows.length, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireValueInList(L.taxCodes, true).setAllowInvalid(true).build());
+  [110, 100, 110, 130, 180, 150, 170, 120, 110, 110, 120, 100, 100, 100,
+   170, 110, 120, 100, 110, 70, 90, 100, 90, 140].forEach((w, i) => items.setColumnWidth(i + 1, w));
+  for (let c = SHEET_BASE_WIDTH + 1; c <= SHEET_BASE_WIDTH + MAX_DETAILS; c++) items.setColumnWidth(c, 140);
 
   // ---- Settings tab: key (hidden column A), label, value, help.
   const settings = ss.insertSheet(S.settingsTab);
-  const values = {
-    language: opts.language,
-    outputMode: opts.outputMode,
-    combineEmployees: opts.combineEmployees ? 'yes' : 'no',
-    companyName: opts.companyName,
-    companyAddress: opts.companyAddress,
-    companyEmail: opts.companyEmail,
-    currency: opts.currency,
-    defaultTaxRate: opts.defaultTaxRate,
-    taxName: opts.taxName,
-    accentColor: opts.accentColor,
-    footer: opts.footer,
-  };
-  const taxRow = SETTING_KEYS.indexOf('defaultTaxRate') + 2;
+  const values = { language: opts.language, outputMode: opts.outputMode, combineEmployees: opts.combineEmployees ? 'yes' : 'no' };
   settings.getRange(2, 3, SETTING_KEYS.length, 1).setNumberFormat('@');
-  settings.getRange(taxRow, 3).setNumberFormat('0.00##');
-  const defaultRate = parseNumber_(opts.defaultTaxRate);
   settings.getRange(1, 1, SETTING_KEYS.length + 1, 4).setValues(
-    [['key'].concat(S.settingHeader)].concat(SETTING_KEYS.map(k => [
-      k, S.settings[k][0],
-      k === 'defaultTaxRate' ? (isNaN(defaultRate) ? '' : defaultRate) : cellText_(values[k]),
-      S.settings[k][1],
-    ])));
-  settings.getRange(1, 1, 1, 4).setFontWeight('bold').setBackground(opts.accentColor).setFontColor('#ffffff');
+    [['key'].concat(S.settingHeader)].concat(SETTING_KEYS.map(k => [k, S.settings[k][0], values[k], S.settings[k][1]])));
+  settings.getRange(1, 1, 1, 4).setFontWeight('bold').setBackground(accent).setFontColor('#ffffff');
   const pick = (key, list) => settings.getRange(SETTING_KEYS.indexOf(key) + 2, 3)
     .setDataValidation(SpreadsheetApp.newDataValidation().requireValueInList(list, true).setAllowInvalid(false).build());
   pick('language', ['en', 'fr']);
   pick('outputMode', ['combined', 'separate']);
   pick('combineEmployees', ['yes', 'no']);
-  settings.getRange(2, 3, SETTING_KEYS.length, 1).setWrap(true).setBackground('#fffbe6');
+  settings.getRange(2, 3, SETTING_KEYS.length, 1).setBackground('#fffbe6');
 
   const linkRow = SETTING_KEYS.length + 3;
   const url = rebuildUrl_(ss.getId());
@@ -493,7 +912,7 @@ function createInvoiceSpreadsheet_(folder, grouped, opts, L, jobId, sourceName) 
   if (url) settings.getRange(linkRow, 3).setFormula(hyperlink_(url, S.rebuildLabel));
   else settings.getRange(linkRow, 3).setValue(S.rebuildManual);
   settings.getRange(linkRow + 1, 3).setFormula(hyperlink_(folder.getUrl(), S.folderLabel));
-  settings.setColumnWidth(2, 220).setColumnWidth(3, 320).setColumnWidth(4, 380);
+  settings.setColumnWidth(2, 220).setColumnWidth(3, 320).setColumnWidth(4, 420);
   settings.hideColumns(1);
   settings.setFrozenRows(1);
 
@@ -502,11 +921,14 @@ function createInvoiceSpreadsheet_(folder, grouped, opts, L, jobId, sourceName) 
     jobId: jobId,
     sourceName: sourceName,
     folderId: folder.getId(),
+    originalId: originalId || '',
     itemsSheetId: items.getSheetId(),
     settingsSheetId: settings.getSheetId(),
     created: new Date().toISOString(),
     lastBuilt: '',
     busyUntil: '',
+    grouping: groupLabel ? 'true' : 'false',
+    taxRates: opts.taxRates,
     files: {},
   });
   SpreadsheetApp.flush();
@@ -527,21 +949,21 @@ function renderFromSpreadsheet_(ss) {
   const opts = normalizeLayoutOptions_(raw);
   opts.hasHeader = true;
   opts.decimalComma = opts.language === 'fr'; // only matters for numbers typed as text
+  opts.dateFormat = 'auto';                   // the sheet stores yyyy-mm-dd; anything else is guessed
+  opts.taxRates = sanitizeRates_(meta.taxRates) || getTaxRates_().rates; // the rates this job was made with
   const L = I18N[opts.language];
 
-  const layout = SHEET_LAYOUTS[String(meta.version)] || SHEET_LAYOUTS['1'];
   const all = sheetToRows_(items.getDataRange(), ss.getSpreadsheetTimeZone());
   const header = all[0] || [];
-  // Extra details = columns O–X that have a header; the header is the label.
+  const text = i => String(header[i] == null ? '' : header[i]).trim();
   const details = [];
-  if (layout.detailStart != null) {
-    for (let c = layout.detailStart; c < layout.detailStart + MAX_DETAILS; c++) {
-      const label = String(header[c] == null ? '' : header[c]).trim();
-      if (label) details.push({ index: c, label: label });
-    }
+  for (let c = SHEET_DETAIL_START; c < SHEET_DETAIL_START + MAX_DETAILS; c++) {
+    if (text(c)) details.push({ index: c, label: text(c) });
   }
-  opts.dateFormat = 'auto'; // the sheet stores yyyy-mm-dd; anything typed differently is guessed
-  const grouped = groupInvoices_(all.slice(1), Object.assign({}, layout.map, { details: details }), opts);
+  const groupBy = text(SHEET_GROUP_COL) ? { index: SHEET_GROUP_COL, label: text(SHEET_GROUP_COL) } : null;
+  const body = all.slice(1);
+  const grouped = groupInvoices_(body, Object.assign({}, SHEET_MAP, { details: details, groupBy: groupBy }), opts,
+    body.map((_, i) => i + 2));
   if (!grouped.invoices.length) {
     throw new Error('No invoices were found in the spreadsheet' +
       (grouped.skipped.length ? ' — first problem: row ' + grouped.skipped[0].row + ': ' + grouped.skipped[0].reason : '.'));
@@ -553,10 +975,23 @@ function renderFromSpreadsheet_(ss) {
   } catch (e) {
     throw new Error('The Drive folder for this spreadsheet no longer exists or you do not have access to it.');
   }
-  const output = writePdfs_(grouped.invoices, opts, L, folder, meta);
+  const branding = loadBranding_(opts.language);
+  const output = writePdfs_(grouped.invoices, opts, L, folder, meta, branding);
   meta.lastBuilt = new Date().toISOString();
   writeMeta_(ss, meta);
-  return { output: output, skipped: grouped.skipped, opts: opts, L: L, meta: meta, folder: folder };
+  return { output: output, skipped: grouped.skipped, notes: grouped.notes, warnings: branding.warnings,
+           opts: opts, L: L, meta: meta, folder: folder };
+}
+
+function sanitizeRates_(r) {
+  if (!r || typeof r !== 'object') return null;
+  const out = {};
+  for (let i = 0; i < TAX_RATE_KEYS.length; i++) {
+    const v = Number(r[TAX_RATE_KEYS[i]]);
+    if (!isFinite(v)) return null;
+    out[TAX_RATE_KEYS[i]] = v;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -567,9 +1002,9 @@ function renderFromSpreadsheet_(ss) {
  * Builds the PDFs. Files recorded in meta.files from an earlier build are
  * overwritten in place (same file, same link, Drive keeps the old version);
  * files that are no longer needed (a deleted invoice, a switched output mode)
- * are moved to the trash.
+ * are moved to the trash. The original data file is never touched.
  */
-function writePdfs_(invoices, opts, L, folder, meta) {
+function writePdfs_(invoices, opts, L, folder, meta, branding) {
   const prev = meta.files || {};
   const prevPer = prev.perInvoice || {};
   const next = { perInvoice: {} };
@@ -579,23 +1014,21 @@ function writePdfs_(invoices, opts, L, folder, meta) {
     const name = (invoices.length === 1
       ? L.fileInvoice + ' ' + safeName_(invoices[0].number)
       : L.fileAll + ' - ' + safeName_(String(meta.sourceName || 'invoices').replace(/\.[^.]+$/, ''))) + '.pdf';
-    const html = wrapHtml_(invoices.map(inv => invoiceBodyHtml_(inv, opts, L)), opts);
-    const file = putFile_(folder, prev.combinedId, htmlToPdf_(html, name));
+    const file = putFile_(folder, prev.combinedId, htmlToPdf_(invoicesHtml_(invoices, opts, L, branding), name));
     next.combinedId = file.getId();
     const url = file.getUrl();
-    output = { invoices: invoices.map(inv => invoiceSummary_(inv, opts, url)), zipUrl: null, combinedUrl: url };
+    output = { invoices: invoices.map(inv => invoiceSummary_(inv, url)), zipUrl: null, combinedUrl: url };
     Object.keys(prevPer).forEach(k => trashFile_(prevPer[k]));
     trashFile_(prev.zipId);
   } else {
     const blobs = [];
     const results = invoices.map(inv => {
-      const base = L.fileInvoice + ' ' + safeName_(inv.number) +
-        (inv.customerName ? ' - ' + safeName_(inv.customerName) : '');
-      const pdf = htmlToPdf_(wrapHtml_([invoiceBodyHtml_(inv, opts, L)], opts), uniqueName_(base, blobs) + '.pdf');
+      const base = L.fileInvoice + ' ' + safeName_(inv.number) + (inv.customerName ? ' - ' + safeName_(inv.customerName) : '');
+      const pdf = htmlToPdf_(invoicesHtml_([inv], opts, L, branding), uniqueName_(base, blobs) + '.pdf');
       const file = putFile_(folder, prevPer[inv.number], pdf);
       next.perInvoice[inv.number] = file.getId();
       blobs.push(pdf);
-      return invoiceSummary_(inv, opts, file.getUrl());
+      return invoiceSummary_(inv, file.getUrl());
     });
     Object.keys(prevPer).forEach(k => { if (!(k in next.perInvoice)) trashFile_(prevPer[k]); });
     let zipUrl = null;
@@ -641,30 +1074,30 @@ function htmlToPdf_(html, name) {
   return Utilities.newBlob(html, MimeType.HTML, 'invoice.html').getAs(MimeType.PDF).setName(name);
 }
 
-function invoiceSummary_(inv, opts, url) {
-  return {
-    number: inv.number,
-    customer: inv.customerName,
-    total: formatMoney_(inv.total, opts.currency, opts.language),
-    url: url,
-  };
+function invoiceSummary_(inv, url) {
+  return { number: inv.number, customer: inv.customerName, total: formatMoney_(inv.total), url: url };
 }
 
 // ---------------------------------------------------------------------------
-// Email + sharing
+// Email
 // ---------------------------------------------------------------------------
 
 function sendResultEmail_(to, built, ss, updated) {
   if (MailApp.getRemainingDailyQuota() < 1) {
     throw new Error('the daily email limit has been reached. Use the links on this page instead.');
   }
-  const opts = built.opts, E = built.L.email, output = built.output, folder = built.folder;
+  const E = built.L.email, output = built.output, folder = built.folder;
+  const accent = accent_();
   const sourceName = String(built.meta.sourceName || '');
   const n = output.invoices.length;
   const button = (url, text) =>
-    '<a href="' + esc_(url) + '" style="display:inline-block;background:' + opts.accentColor +
+    '<a href="' + esc_(url) + '" style="display:inline-block;background:' + accent +
     ';color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:6px;font-weight:bold;margin:4px 8px 4px 0">' +
     esc_(text) + '</a>';
+  let originalUrl = '';
+  if (built.meta.originalId) {
+    try { originalUrl = DriveApp.getFileById(built.meta.originalId).getUrl(); } catch (e) { originalUrl = ''; }
+  }
 
   let subject, buttons = '', list = '';
   if (output.combinedUrl) {
@@ -693,6 +1126,8 @@ function sendResultEmail_(to, built, ss, updated) {
       '<p>' + E.intro(n, esc_(sourceName)) + '</p>' +
       '<p>' + buttons + '</p>' +
       list +
+      (originalUrl ? '<p style="margin-top:16px">' + esc_(E.originalData) + ': <a href="' + esc_(originalUrl) + '">' +
+        esc_(ORIGINAL_PREFIX + sourceName) + '</a></p>' : '') +
       '<p style="margin-top:20px">' + rebuildHtml + '</p>' +
       '<p style="color:#888;font-size:12px;margin-top:24px">' + esc_(E.reference) + ': ' + esc_(built.meta.jobId) +
         ' · ' + esc_(E.footer) + '</p>' +
@@ -700,6 +1135,7 @@ function sendResultEmail_(to, built, ss, updated) {
 
   const plainLinks = (output.combinedUrl ? [E.openPdf + ': ' + output.combinedUrl] : output.invoices.map(i => i.number + ': ' + i.url))
     .concat([E.editSheet + ': ' + ss.getUrl(), E.openFolder + ': ' + folder.getUrl()])
+    .concat(originalUrl ? [E.originalData + ': ' + originalUrl] : [])
     .concat(rebuildUrl ? [E.rebuildHint + ' ' + E.rebuildLink + ': ' + rebuildUrl] : [E.rebuildManual]);
 
   MailApp.sendEmail({
@@ -707,20 +1143,8 @@ function sendResultEmail_(to, built, ss, updated) {
     subject: subject,
     htmlBody: htmlBody,
     body: E.intro(n, sourceName).replace(/<[^>]+>/g, '') + '\n\n' + plainLinks.join('\n'),
-    name: opts.companyName || 'Invoice PDF Generator',
+    name: 'Invoice PDF Generator',
   });
-}
-
-/** If the email goes to someone other than the signed-in user, let them open the files. */
-function shareWithRecipient_(folder, recipient, warnings) {
-  const me = currentUserEmail_().toLowerCase();
-  if (!recipient || recipient.toLowerCase() === me) return;
-  try {
-    folder.addViewer(recipient);
-  } catch (e) {
-    warnings.push('Could not share the Drive folder with ' + recipient +
-      ' (' + e.message + '). They may need to request access to open the link.');
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -728,9 +1152,10 @@ function shareWithRecipient_(folder, recipient, warnings) {
 // ---------------------------------------------------------------------------
 
 /**
- * Reads an uploaded CSV or XLSX file.
- * Returns { rows: 2-D array of cell text, decimalComma: best guess at whether
- * numbers in the file use a decimal comma (1 234,56) }.
+ * Reads an uploaded CSV or Excel file. Returns { rows, rowNumbers, decimalComma, notes }:
+ * rows are the cell values, rowNumbers the file's own row numbers (for messages),
+ * decimalComma a guess at whether numbers use a decimal comma (1 234,56).
+ * Rows hidden in Excel (by a filter or by hand) are left out.
  */
 function readRows_(file, jobId) {
   if (!file || !file.base64) throw new Error('Please choose a CSV or XLSX file first.');
@@ -740,8 +1165,9 @@ function readRows_(file, jobId) {
   if (name.endsWith('.csv') || name.endsWith('.txt')) {
     const text = decodeText_(bytes);
     const delimiter = detectDelimiter_(text);
+    const rows = Utilities.parseCsv(text, delimiter);
     // Excel in French (and most European locales) saves ";"-separated CSVs with decimal commas.
-    return { rows: Utilities.parseCsv(text, delimiter), decimalComma: delimiter === ';' };
+    return { rows: rows, rowNumbers: rows.map((_, i) => i + 1), decimalComma: delimiter === ';', notes: [] };
   }
 
   if (name.endsWith('.xlsx') || name.endsWith('.xls')) {
@@ -753,7 +1179,27 @@ function readRows_(file, jobId) {
     );
     try {
       const ss = SpreadsheetApp.openById(temp.id);
-      return { rows: sheetToRows_(ss.getSheets()[0].getDataRange(), ss.getSpreadsheetTimeZone()), decimalComma: false };
+      const sheet = ss.getSheets()[0];
+      const all = sheetToRows_(sheet.getDataRange(), ss.getSpreadsheetTimeZone());
+      const notes = [];
+      let hidden = {};
+      try {
+        hidden = hiddenRowIndexes_(temp.id, sheet.getName());
+      } catch (e) {
+        notes.push('The Excel file couldn\'t be checked for hidden rows, so every row was read.');
+      }
+      const rows = [], rowNumbers = [];
+      let hiddenCount = 0;
+      all.forEach((r, i) => {
+        if (hidden[i]) { hiddenCount++; return; }
+        rows.push(r);
+        rowNumbers.push(i + 1);
+      });
+      if (hiddenCount) {
+        notes.unshift(hiddenCount + ' hidden row' + (hiddenCount === 1 ? '' : 's') +
+          ' in the Excel file (hidden by a filter or by hand) ' + (hiddenCount === 1 ? 'was' : 'were') + ' not invoiced.');
+      }
+      return { rows: rows, rowNumbers: rowNumbers, decimalComma: false, notes: notes };
     } finally {
       DriveApp.getFileById(temp.id).setTrashed(true);
     }
@@ -763,9 +1209,29 @@ function readRows_(file, jobId) {
 }
 
 /**
- * Cell values of a Google Sheet range. Dates become yyyy-MM-dd (so they can be
- * shown in the chosen language); numbers stay numbers (so the sheet's locale
- * can't confuse parsing), except percentages, which keep their "%" text.
+ * 0-based indexes of rows hidden by a filter or by hand, from one Sheets API call.
+ * Returns { 3: true, 7: true, ... }.
+ */
+function hiddenRowIndexes_(spreadsheetId, sheetName) {
+  const res = Sheets.Spreadsheets.get(spreadsheetId, {
+    ranges: ["'" + String(sheetName).replace(/'/g, "''") + "'"],
+    fields: 'sheets(data(startRow,rowMetadata(hiddenByFilter,hiddenByUser)))',
+  });
+  const out = {};
+  const sheet = ((res && res.sheets) || [])[0] || {};
+  (sheet.data || []).forEach(d => {
+    const start = d.startRow || 0;
+    (d.rowMetadata || []).forEach((m, i) => {
+      if (m && (m.hiddenByFilter || m.hiddenByUser)) out[start + i] = true;
+    });
+  });
+  return out;
+}
+
+/**
+ * Cell values of a Google Sheet range. Dates become yyyy-MM-dd; numbers stay
+ * numbers (so the sheet's locale can't confuse parsing), except percentages,
+ * which keep their "%" text.
  */
 function sheetToRows_(range, tz) {
   const values = range.getValues();
@@ -803,7 +1269,7 @@ function detectDelimiter_(text) {
 
 /**
  * Validates column letters and converts them to zero-based indexes.
- * raw.details is a list of up to 10 { col, label } extra-detail columns.
+ * raw.details: up to 10 { col, label }; raw.groupBy: { col, label } (optional).
  */
 function normalizeMapping_(raw) {
   const mapping = {};
@@ -812,8 +1278,10 @@ function normalizeMapping_(raw) {
     if (!/^[A-Z]{1,3}$/.test(letters)) { errors.push(label + ': "' + letters + '" is not a valid column letter.'); return null; }
     return colToIndex_(letters);
   };
+  const legacy = { candidate: ['employeeName', 'description'], units: ['quantity'], address1: ['customerAddress'] };
   FIELDS.forEach(f => {
-    const letters = String(raw[f.key] || '').trim().toUpperCase();
+    let letters = String(raw[f.key] || '').trim().toUpperCase();
+    if (!letters && legacy[f.key]) letters = legacy[f.key].map(k => String(raw[k] || '').trim().toUpperCase()).filter(Boolean)[0] || '';
     if (!letters) {
       if (f.required) errors.push(f.label + ' is required.');
       mapping[f.key] = null;
@@ -821,9 +1289,6 @@ function normalizeMapping_(raw) {
       mapping[f.key] = toIndex(letters, f.label);
     }
   });
-  if (mapping.employeeName == null && mapping.description == null && !errors.length) {
-    errors.push('Enter a column for Employee name or Role / description (or both).');
-  }
   mapping.details = [];
   (Array.isArray(raw.details) ? raw.details : []).slice(0, MAX_DETAILS).forEach((d, n) => {
     const letters = String((d && d.col) || '').trim().toUpperCase();
@@ -831,160 +1296,175 @@ function normalizeMapping_(raw) {
     const index = toIndex(letters, 'Extra detail ' + (n + 1));
     if (index != null) mapping.details.push({ index: index, label: String(d.label || '').trim().slice(0, 60) });
   });
+  const g = raw.groupBy || {};
+  const gLetters = String(g.col || '').trim().toUpperCase();
+  mapping.groupBy = null;
+  if (gLetters) {
+    const index = toIndex(gLetters, 'Group line items by');
+    if (index != null) mapping.groupBy = { index: index, label: String(g.label || '').trim().slice(0, 60) };
+  }
   if (errors.length) throw new Error(errors.join(' '));
   return mapping;
 }
 
 /** Cleans up the options and fills in defaults. Never trusts the client. */
 function normalizeOptions_(o) {
-  const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
-  const recipient = str(o.recipient, 254) || currentUserEmail_();
-  if (!recipient) throw new Error('Please enter the email address that should receive the link.');
-  if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(recipient)) {
-    throw new Error('"' + recipient + '" is not a valid email address.');
-  }
   return Object.assign(normalizeLayoutOptions_(o), {
     hasHeader: !!o.hasHeader,
     numberFormat: ['dot', 'comma'].indexOf(o.numberFormat) !== -1 ? o.numberFormat : 'auto',
     dateFormat: ['dmy', 'mdy'].indexOf(o.dateFormat) !== -1 ? o.dateFormat : 'auto',
-    recipient: recipient,
   });
 }
 
 /** Options that control how invoices look. Shared by the web form and the spreadsheet's Settings tab. */
 function normalizeLayoutOptions_(o) {
   const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
-  const color = str(o.accentColor, 7).replace(/^([0-9a-f]{6})$/i, '#$1');
   return {
     language: str(o.language, 5).toLowerCase() === 'fr' ? 'fr' : 'en',
-    outputMode: str(o.outputMode, 20).toLowerCase() === 'combined' ? 'combined' : 'separate',
+    // Same default as the web form: one combined PDF unless "separate" is chosen.
+    outputMode: str(o.outputMode, 20).toLowerCase() === 'separate' ? 'separate' : 'combined',
     combineEmployees: o.combineEmployees === true || /^(yes|oui|true|1|y|o)$/i.test(str(o.combineEmployees, 5)),
-    companyName: str(o.companyName, 200),
-    companyEmail: str(o.companyEmail, 200),
-    companyAddress: str(o.companyAddress, 1000),
-    currency: o.currency == null ? '$' : str(o.currency, 5),
-    defaultTaxRate: str(o.defaultTaxRate, 20),
-    taxName: str(o.taxName, 40),
-    accentColor: /^#[0-9a-f]{6}$/i.test(color) ? color : '#1f4e79',
-    footer: str(o.footer, 2000),
   };
 }
 
 /**
- * Groups rows into invoices. Each row becomes one raw item (kept as-is for the
- * editable spreadsheet); inv.lines are the line items printed on the PDF,
- * optionally combined per employee (see buildLines_).
+ * Groups rows (single-line records) into invoices.
+ * Returns { invoices, skipped: rows not invoiced, notes: non-blocking messages, detailLabels }.
+ * Rules:
+ *  - a fully blank row is ignored; a row with no invoice number is skipped and listed;
+ *  - Units or Rate that are blank or not numbers count as 0, with a note;
+ *  - invoice details come from the first row of the invoice that has them; the
+ *    address comes whole from the first row that has any address part;
+ *  - the first tax code found applies to the whole invoice; unknown → EXEMPT.
  */
-function groupInvoices_(rows, m, opts) {
+function groupInvoices_(rows, m, opts, rowNums) {
+  const L = I18N[opts.language] || I18N.en;
   const byNumber = {};
   const order = [];
   const skipped = [];
-  const headerOffset = opts.hasHeader ? 2 : 1; // for human-readable row numbers
+  const notes = [];
   const details = m.details || [];
   const labels = details.map(d => d.label);
   const dateOrder = resolveDateOrder_(rows, m, opts);
-  let current = null;
+  const rates = opts.taxRates || DEFAULT_TAX_RATES;
 
-  const raw = (row, key) => {
-    const idx = m[key];
-    return idx == null || row[idx] == null ? '' : row[idx];
-  };
+  const raw = (row, key) => { const idx = m[key]; return idx == null || row[idx] == null ? '' : row[idx]; };
   const get = (row, key) => String(raw(row, key)).trim();
   const blank = v => v == null || String(v).trim() === '';
 
   rows.forEach((row, i) => {
-    const rowNum = i + headerOffset;
+    const rowNum = rowNums ? rowNums[i] : i + 1;
     if (row.every(blank)) return; // blank line
-
-    let number = get(row, 'invoiceNumber');
+    const number = get(row, 'invoiceNumber');
     if (!number) {
-      if (!current) { skipped.push({ row: rowNum, reason: 'Missing invoice number' }); return; }
-      number = current.number;
+      skipped.push({ row: rowNum, reason: 'No invoice number, so the row can\'t be placed on an invoice' });
+      return;
     }
+    const where = 'Row ' + rowNum + ' (' + number + ')';
 
     let inv = byNumber[number];
     if (!inv) {
-      inv = byNumber[number] = { number: number, items: [], detailLabels: labels };
+      inv = byNumber[number] = { number: number, items: [], detailLabels: labels, address: null, taxCodeRaw: '', taxSeen: [] };
       order.push(inv);
     }
-    // Fill invoice-level fields from the first row that has them.
-    ['invoiceDate', 'dueDate', 'customerName', 'customerEmail', 'customerAddress', 'taxRate', 'notes']
-      .forEach(k => {
-        if (!blank(inv[k])) return;
-        if (k === 'taxRate') inv[k] = raw(row, k);
-        else if (k === 'invoiceDate' || k === 'dueDate') inv[k] = normalizeDate_(get(row, k), dateOrder);
-        else inv[k] = get(row, k);
-      });
-    current = inv;
+    INVOICE_FIELDS.forEach(k => {
+      if (!blank(inv[k])) return;
+      inv[k] = (k === 'invoiceDate' || k === 'dueDate') ? normalizeDate_(get(row, k), dateOrder) : get(row, k);
+    });
+    if (!inv.address) {
+      const parts = {};
+      let any = false;
+      ADDRESS_KEYS.forEach(k => { parts[k] = get(row, k); if (parts[k]) any = true; });
+      if (any) inv.address = parts;
+    }
+    const code = get(row, 'taxCode');
+    if (code) {
+      if (!inv.taxCodeRaw) inv.taxCodeRaw = code;
+      const key = normalizeTaxCode_(code) || code.toUpperCase();
+      if (inv.taxSeen.indexOf(key) === -1) inv.taxSeen.push(key);
+    }
 
-    const employee = get(row, 'employeeName');
-    const desc = get(row, 'description');
-    const qtyRaw = get(row, 'quantity');
-    const priceRaw = get(row, 'unitPrice');
-    if (!employee && !desc && !qtyRaw && !priceRaw) return; // invoice-details-only row
-
-    const qty = qtyRaw === '' ? 1 : parseNumber_(raw(row, 'quantity'), opts.decimalComma);
-    const price = parseNumber_(raw(row, 'unitPrice'), opts.decimalComma);
-    if (isNaN(qty)) { skipped.push({ row: rowNum, reason: 'Hours "' + qtyRaw + '" is not a number' }); return; }
-    if (isNaN(price)) { skipped.push({ row: rowNum, reason: 'Pay rate "' + priceRaw + '" is not a number' }); return; }
+    const num = (key, label) => {
+      const text = get(row, key);
+      const n = text === '' ? NaN : parseNumber_(raw(row, key), opts.decimalComma);
+      if (isNaN(n)) {
+        notes.push(where + ': ' + label + (text === '' ? ' is blank' : ' "' + text + '" is not a number') + ', so 0 was used.');
+        return { value: 0, cell: text };
+      }
+      return { value: n, cell: n };
+    };
+    const units = num('units', 'Units');
+    const rate = num('unitPrice', 'Rate');
+    const lineType = get(row, 'lineType');
+    if (!lineType) notes.push(where + ': no line type, so it is listed as "' + L.other + '" in the units summary.');
 
     inv.items.push({
-      employee: employee,
+      candidate: get(row, 'candidate'),
+      workOrder: get(row, 'workOrder'),
+      purchaseOrder: get(row, 'purchaseOrder'),
       workDate: normalizeDate_(get(row, 'workDate'), dateOrder),
-      description: desc,
-      quantity: qty,
-      unitPrice: price,
-      amount: round2_(qty * price),
+      lineType: lineType,
+      units: units.value,
+      unitPrice: rate.value,
+      unitsCell: units.cell,
+      rateCell: rate.cell,
+      amount: round2_(units.value * rate.value),
       details: details.map(d => String(row[d.index] == null ? '' : row[d.index]).trim()),
+      group: m.groupBy ? String(row[m.groupBy.index] == null ? '' : row[m.groupBy.index]).trim() : '',
     });
   });
 
-  const defaultRate = parseNumber_(opts.defaultTaxRate); // from the form's number box: always "8.25" style
   const invoices = [];
   order.forEach(inv => {
-    if (!inv.items.length) {
-      skipped.push({ row: '—', reason: 'Invoice ' + inv.number + ' has no line items' });
-      return;
+    let code = 'EXEMPT';
+    if (inv.taxCodeRaw) {
+      const key = normalizeTaxCode_(inv.taxCodeRaw);
+      if (key) code = key;
+      else notes.push('Invoice ' + inv.number + ': tax code "' + inv.taxCodeRaw + '" is not recognised, so EXEMPT was used.');
     }
+    if (inv.taxSeen.length > 1) {
+      notes.push('Invoice ' + inv.number + ': rows had different tax codes (' + inv.taxSeen.join(', ') + '); "' +
+        inv.taxCodeRaw + '" (the first) was used for the whole invoice.');
+    }
+    inv.taxCode = code;
     inv.lines = buildLines_(inv.items, !!opts.combineEmployees);
-    const rowRate = parseNumber_(inv.taxRate, opts.decimalComma);
-    inv.taxRatePct = !isNaN(rowRate) ? rowRate : (!isNaN(defaultRate) ? defaultRate : 0);
+    inv.groups = groupLines_(inv.lines);
+    inv.groupLabel = m.groupBy ? m.groupBy.label : '';
+    inv.unitsSummary = unitsSummary_(inv.items, L);
     inv.subtotal = round2_(inv.lines.reduce((s, ln) => s + ln.amount, 0));
-    inv.tax = round2_(inv.subtotal * inv.taxRatePct / 100);
+    inv.taxes = computeTaxes_(code, inv.subtotal, rates);
+    inv.tax = round2_(inv.taxes.reduce((s, t) => s + t.amount, 0));
     inv.total = round2_(inv.subtotal + inv.tax);
     invoices.push(inv);
   });
 
-  return { invoices: invoices, skipped: skipped, detailLabels: labels };
+  return { invoices: invoices, skipped: skipped, notes: notes, detailLabels: labels };
 }
 
 /**
- * Turns raw items into PDF line items. When combining, rows with the same
- * employee, role/description and rate become one line: hours are added up,
- * the work dates become a range, and differing detail values are listed
- * (e.g. "Location: Studio A, Studio B"). A different rate or role for the
- * same employee (e.g. overtime) stays on its own line.
+ * Turns raw items into PDF line items. When combining, rows with the same group,
+ * candidate/role, line type, work order, purchase order and rate become one
+ * line: units are added up, the work dates become a range, and differing detail
+ * values are listed. A different rate or line type (e.g. overtime) stays separate.
  */
 function buildLines_(items, combine) {
-  if (!combine) {
-    return items.map(it => ({
-      employee: it.employee, description: it.description, quantity: it.quantity,
-      unitPrice: it.unitPrice, amount: it.amount,
-      dates: it.workDate ? [it.workDate] : [],
-      details: it.details.map(v => v ? [v] : []),
-    }));
-  }
+  const toLine = it => ({
+    candidate: it.candidate, workOrder: it.workOrder, purchaseOrder: it.purchaseOrder, lineType: it.lineType,
+    group: it.group, quantity: it.units, unitPrice: it.unitPrice, amount: it.amount,
+    dates: it.workDate ? [it.workDate] : [], details: it.details.map(v => v ? [v] : []),
+  });
+  if (!combine) return items.map(toLine);
   const byKey = {};
   const lines = [];
   items.forEach(it => {
-    const key = [it.employee.toLowerCase(), it.description.toLowerCase(), it.unitPrice].join('\u0001');
+    const key = [it.group, it.candidate, it.lineType, it.workOrder, it.purchaseOrder]
+      .map(s => String(s).toLowerCase()).concat([it.unitPrice]).join('\u0001');
     let ln = byKey[key];
     if (!ln) {
-      ln = byKey[key] = { employee: it.employee, description: it.description, quantity: 0,
-        unitPrice: it.unitPrice, dates: [], details: it.details.map(() => []) };
+      ln = byKey[key] = Object.assign(toLine(it), { quantity: 0, dates: [], details: it.details.map(() => []) });
       lines.push(ln);
     }
-    ln.quantity += it.quantity;
+    ln.quantity += it.units;
     if (it.workDate) ln.dates.push(it.workDate);
     it.details.forEach((v, i) => { if (v && ln.details[i].indexOf(v) === -1) ln.details[i].push(v); });
   });
@@ -992,6 +1472,51 @@ function buildLines_(items, combine) {
     ln.quantity = Math.round(ln.quantity * 1000) / 1000;
     ln.amount = round2_(ln.quantity * ln.unitPrice);
   });
+  return lines;
+}
+
+/**
+ * Groups lines under headings: [{ value, lines }] in order of first appearance.
+ * Lines with no group value come first, with no heading (value ''). With no group
+ * values at all, there is a single headingless group.
+ */
+function groupLines_(lines) {
+  const blank = lines.filter(ln => !ln.group);
+  const groups = [];
+  const byValue = {};
+  lines.forEach(ln => {
+    if (!ln.group) return;
+    if (!byValue[ln.group]) { byValue[ln.group] = { value: ln.group, lines: [] }; groups.push(byValue[ln.group]); }
+    byValue[ln.group].lines.push(ln);
+  });
+  return (blank.length ? [{ value: '', lines: blank }] : []).concat(groups);
+}
+
+/** Units per line type for one invoice (no total row). Types match ignoring case and extra spaces. */
+function unitsSummary_(items, L) {
+  const out = [];
+  const byKey = {};
+  items.forEach(it => {
+    const label = String(it.lineType || '').replace(/\s+/g, ' ').trim();
+    const key = label.toLowerCase();
+    if (!byKey[key]) { byKey[key] = { type: label || L.other, units: 0 }; out.push(byKey[key]); }
+    byKey[key].units += it.units;
+  });
+  out.forEach(r => { r.units = Math.round(r.units * 1000) / 1000; });
+  return out;
+}
+
+/** Combines the address parts into printed lines: 1–4, "City, ST  Postal", Country. */
+function formatClientAddress_(p) {
+  if (!p) return [];
+  const t = k => cleanText_(p[k]);
+  const lines = ['address1', 'address2', 'address3', 'address4'].map(t).filter(Boolean);
+  const postal = t('postalCode').toUpperCase();
+  let cityLine = t('city');
+  if (t('province')) cityLine = cityLine ? cityLine + ', ' + t('province') : t('province');
+  if (postal) cityLine = cityLine ? cityLine + '  ' + postal : postal;
+  if (cityLine) lines.push(cityLine);
+  if (t('country')) lines.push(t('country'));
   return lines;
 }
 
@@ -1037,150 +1562,297 @@ function normalizeDate_(value, order) {
   return t;
 }
 
-/** Short date: "Nov 3, 2026" / "3 nov. 2026". */
-function formatShortDate_(isoDate, L, withYear) {
-  const p = isoDate.split('-').map(Number);
-  const mon = L.monthsShort[p[1] - 1];
-  if (L.locale === 'fr') return (p[2] === 1 ? '1er' : p[2]) + ' ' + mon + (withYear === false ? '' : ' ' + p[0]);
-  return mon + ' ' + p[2] + (withYear === false ? '' : ', ' + p[0]);
+/** yyyy-mm-dd → MM/DD/YYYY (both languages). Anything else is shown as written. */
+function formatDate_(value) {
+  const s = String(value || '').trim();
+  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/);
+  if (!m) return s;
+  return ('0' + m[2]).slice(-2) + '/' + ('0' + m[3]).slice(-2) + '/' + m[1];
+}
+
+/** The date or date range for a line: "11/03/2026" or "11/03/2026 – 11/05/2026". */
+function formatDateSpan_(dates) {
+  const isoDates = dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  if (!isoDates.length) return dates.filter((d, i) => dates.indexOf(d) === i).join(', ');
+  const a = isoDates[0], b = isoDates[isoDates.length - 1];
+  return a === b ? formatDate_(a) : formatDate_(a) + ' – ' + formatDate_(b);
+}
+
+// ---------------------------------------------------------------------------
+// PDF HTML: pages, header, body, summary, totals, footer
+// ---------------------------------------------------------------------------
+
+/** The whole PDF for one or more invoices; each invoice starts on a new page. */
+function invoicesHtml_(invoices, opts, L, branding) {
+  const pages = [];
+  invoices.forEach(inv => { invoicePages_(inv, opts, L, branding).forEach(p => pages.push(p)); });
+  const bottom = cleanText_(cfg_().PAGE_NUMBER_POSITION).toLowerCase() !== 'top';
+  const html = pages.map((p, i) => {
+    const brk = i < pages.length - 1 ? 'page-break-after:always;' : '';
+    const num = '<tr><td class="pn" style="height:' + PAGE.NUMBER_ROW + 'pt">' + esc_(p.number) + '</td></tr>';
+    return '<table class="page" style="height:' + PAGE.HEIGHT + 'pt;' + brk + '">' +
+      (bottom ? '' : num) +
+      '<tr><td class="page-content">' + p.content + '</td></tr>' +
+      (bottom ? num : '') +
+      '</table>';
+  });
+  return wrapHtml_(html, branding.accent);
+}
+
+function wrapHtml_(pages, accent) {
+  const a = accent || DEFAULT_ACCENT;
+  const css =
+    '@page{size:letter portrait;margin:0.5in;}' +
+    'body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:9pt;margin:0;}' +
+    'table{border-collapse:collapse;width:100%;}' +
+    'td,th{vertical-align:top;padding:0;}' +
+    '.page-content{vertical-align:top;}' +
+    '.pn{text-align:right;vertical-align:bottom;font-size:8pt;color:#777;}' +
+    '.hdr-details td{padding:1.5pt 0 1.5pt 12pt;font-size:9pt;white-space:nowrap;}' +
+    '.hdr-details td.lbl{color:#666;text-align:right;}' +
+    '.hdr-details td.val{text-align:right;font-weight:bold;}' +
+    '.name{font-weight:bold;color:' + a + ';font-size:10.5pt;}' +
+    '.block div{line-height:12pt;}' +
+    '.company{text-align:right;}' +
+    '.gov{font-size:8pt;color:#666;}' +
+    '.confidential{font-weight:bold;letter-spacing:1pt;font-size:9pt;padding-top:10pt;}' +
+    '.items{margin-top:10pt;table-layout:fixed;}' +
+    '.items th{background:' + a + ';color:#fff;padding:5pt 4pt;font-size:8pt;text-align:left;font-weight:bold;}' +
+    '.items th.num,.items td.num{text-align:right;}' +
+    '.items td{padding:4pt;border-bottom:0.5pt solid #ddd;font-size:8.5pt;word-wrap:break-word;}' +
+    '.items tr.alt td{background:#f5f6f8;}' +
+    '.items tr.grp td{background:' + tint_(a, 0.86) + ';border-left:3pt solid ' + a + ';color:' + a +
+      ';font-weight:bold;padding:4pt 6pt;font-size:8.5pt;}' +
+    '.detail{font-size:7.5pt;color:#555;padding-left:8pt;line-height:10pt;}' +
+    '.section{font-size:8pt;font-weight:bold;color:' + a + ';text-transform:uppercase;letter-spacing:0.6pt;margin-bottom:3pt;}' +
+    '.units th{text-align:left;font-size:8pt;color:#666;font-weight:normal;border-bottom:0.5pt solid #ccc;padding:2pt 6pt 2pt 0;}' +
+    '.units th.num,.units td.num{text-align:right;}' +
+    '.units td{padding:2pt 6pt 2pt 0;font-size:9pt;}' +
+    '.totals td{padding:3pt 0 3pt 8pt;font-size:9.5pt;}' +
+    '.totals td.num{text-align:right;white-space:nowrap;}' +
+    '.totals tr.grand td{font-weight:bold;font-size:11pt;border-top:1.5pt solid ' + a + ';padding-top:5pt;}' +
+    '.footer{margin-top:16pt;border-top:1pt solid ' + a + ';padding-top:8pt;font-size:8.5pt;}' +
+    '.footer td{line-height:11pt;}' +
+    '.footer .pay{font-weight:bold;}' +
+    '.footer .bank td{padding:0 0 0 8pt;white-space:nowrap;}' +
+    '.footer .bank td.lbl{text-align:right;color:#666;}' +
+    '.footer .bank td.val{text-align:right;}' +
+    '.remit{margin-top:8pt;}' +
+    '.disclosure{font-size:7.5pt;color:#666;text-align:justify;margin-top:6pt;line-height:10pt;}';
+  return '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' + css + '</style></head><body>' +
+    pages.join('') + '</body></html>';
+}
+
+/** Splits one invoice into pages: [{ content, number }]. */
+function invoicePages_(inv, opts, L, branding) {
+  const pages = paginateInvoice_(inv, branding);
+  return pages.map((rows, p) => {
+    const last = p === pages.length - 1;
+    const content = (p === 0 ? headerHtml_(inv, L, branding) : condensedHeaderHtml_(inv, L, branding)) +
+      itemsTableHtml_(rows, inv, L) +
+      (last ? summaryTotalsHtml_(inv, L) + footerHtml_(branding.footer) : '');
+    return { content: content, number: L.page(p + 1, pages.length) };
+  });
+}
+
+/** Estimated height (pt) of one line row. */
+function lineHeight_(ln, labels) {
+  const chars = (s, per) => Math.max(1, Math.ceil(String(s || '').length / per));
+  // The first column stacks the name and the extra-detail lines; the other
+  // columns sit beside it, so the row is as tall as the tallest column.
+  let detailLines = 0;
+  labels.forEach((label, d) => {
+    if (ln.details[d] && ln.details[d].length) detailLines += chars(label + ': ' + ln.details[d].join(', '), 34);
+  });
+  const first = chars(ln.candidate, 24) * PAGE.TEXT_LINE + detailLines * PAGE.DETAIL_LINE;
+  const others = Math.max(chars(ln.workOrder, 11), chars(ln.purchaseOrder, 11),
+    chars(formatDateSpan_(ln.dates), 16), chars(ln.lineType, 9)) * PAGE.TEXT_LINE;
+  return PAGE.LINE_PAD + Math.max(first, others);
+}
+
+/** Estimated height (pt) of the full header on page 1. */
+function fullHeaderHeight_(inv, branding) {
+  const clientLines = 1 + (inv.attention ? 1 : 0) + formatClientAddress_(inv.address).length;
+  const companyLines = branding.company.address.length + (branding.company.phone ? 1 : 0) + branding.company.gov.length;
+  return 62 + 10 + Math.max(clientLines, companyLines) * 12 + 24;
+}
+
+/** Estimated height (pt) of the units summary, totals and footer on the last page. */
+function tailHeight_(inv, branding) {
+  const f = branding.footer;
+  const summary = 14 + Math.max(2 + inv.unitsSummary.length, 2 + inv.taxes.length) * 13 + 6;
+  const hasFooter = f.paymentTitle || f.bankAddress.length || f.bankDetails.length || f.remittance || f.disclosure;
+  const footer = hasFooter
+    ? 24 + Math.max(1 + f.bankAddress.length, f.bankDetails.length) * 11 + (f.remittance ? 19 : 0) +
+      Math.ceil(String(f.disclosure || '').length / 130) * 10 + 6
+    : 0;
+  return summary + footer;
 }
 
 /**
- * The date or date range for a line: "Nov 3, 2026", "Nov 3–7, 2026",
- * "Nov 28 – Dec 2, 2026" (fr: "3–7 nov. 2026"). Dates that couldn't be read
- * are listed as written.
+ * Splits an invoice's rows into pages. Each page gets: header (full on page 1,
+ * condensed after), column headings, as many rows as fit. The last page must
+ * also fit the summary, totals and footer. Group headings stay with their next
+ * line, and repeat with "(continued)" on the next page.
+ * Returns [[row, ...], ...] where row = { type: 'group'|'line', ... }.
  */
-function formatDateSpan_(dates, L) {
-  const isoDates = dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
-  if (!isoDates.length) {
-    return dates.filter((d, i) => dates.indexOf(d) === i).join(', ');
-  }
-  const a = isoDates[0], b = isoDates[isoDates.length - 1];
-  if (a === b) return formatShortDate_(a, L);
-  const [ya, ma, da] = a.split('-').map(Number);
-  const [yb, mb, db] = b.split('-').map(Number);
-  if (ya === yb && ma === mb) {
-    return L.locale === 'fr'
-      ? (da === 1 ? '1er' : da) + '–' + db + ' ' + L.monthsShort[mb - 1] + ' ' + yb
-      : L.monthsShort[ma - 1] + ' ' + da + '–' + db + ', ' + ya;
-  }
-  if (ya === yb) return formatShortDate_(a, L, false) + ' – ' + formatShortDate_(b, L);
-  return formatShortDate_(a, L) + ' – ' + formatShortDate_(b, L);
-}
-
-// ---------------------------------------------------------------------------
-// PDF HTML template
-// ---------------------------------------------------------------------------
-
-/** Wraps one or more invoice bodies in a document; each body starts on a new page. */
-function wrapHtml_(bodies, opts) {
-  const accent = opts.accentColor;
-  return '<!DOCTYPE html><html lang="' + opts.language + '"><head><meta charset="utf-8"><style>' +
-    'body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:11pt;margin:0;}' +
-    'table{border-collapse:collapse;width:100%;}' +
-    'td,th{vertical-align:top;}' +
-    '.title{font-size:28pt;font-weight:bold;color:' + accent + ';letter-spacing:1px;}' +
-    '.company{font-size:13pt;font-weight:bold;}' +
-    '.muted{color:#666;font-size:10pt;}' +
-    '.label{color:#666;padding:2px 12px 2px 0;}' +
-    '.num{text-align:right;white-space:nowrap;}' +
-    '.section{font-size:9pt;font-weight:bold;color:' + accent + ';text-transform:uppercase;letter-spacing:1px;margin-bottom:4px;}' +
-    '.items th{background:' + accent + ';color:#fff;padding:8px;text-align:left;font-size:10pt;}' +
-    '.items th.num{text-align:right;}' +
-    '.items td{padding:8px;border-bottom:1px solid #e3e3e3;}' +
-    '.items tr.alt td{background:#f7f7f7;}' +
-    '.totals td{padding:5px 8px;}' +
-    '.grand td{font-size:13pt;font-weight:bold;border-top:2px solid ' + accent + ';padding-top:8px;}' +
-    '.detail{margin:3px 0 0 14pt;font-size:9pt;color:#555;}' +
-    '.date{white-space:nowrap;font-size:10pt;}' +
-    '.notes{margin-top:28px;padding:10px 12px;background:#f7f7f7;font-size:10pt;}' +
-    '.footer{margin-top:36px;text-align:center;color:#666;font-size:9pt;}' +
-    '</style></head><body>' +
-    bodies.map((b, i) => i === 0 ? '<div>' + b + '</div>' : '<div style="page-break-before:always">' + b + '</div>').join('') +
-    '</body></html>';
-}
-
-function invoiceBodyHtml_(inv, opts, L) {
-  const cur = opts.currency;
-  const lang = opts.language;
-  const nl2br = s => esc_(s).replace(/\r?\n/g, '<br>');
-  const money = n => esc_(formatMoney_(n, cur, lang));
-
-  const lines = inv.lines || [];
+function paginateInvoice_(inv, branding) {
   const labels = inv.detailLabels || [];
-  const hasDates = lines.some(ln => ln.dates.length);
-  const itemRows = lines.map((ln, i) => {
-    // Employee in bold, then role/description; extra details indented underneath.
-    const title = ln.employee
-      ? '<strong>' + esc_(ln.employee) + '</strong>' + (ln.description ? ' — ' + nl2br(ln.description) : '')
-      : nl2br(ln.description);
+  const rows = [];
+  inv.groups.forEach(g => {
+    if (g.value) rows.push({ type: 'group', group: g, continued: false, h: PAGE.GROUP_ROW });
+    g.lines.forEach(ln => rows.push({ type: 'line', line: ln, group: g, h: lineHeight_(ln, labels) }));
+  });
+  const fullHeader = fullHeaderHeight_(inv, branding);
+  const budget = p => PAGE.HEIGHT - PAGE.NUMBER_ROW - PAGE.COL_HEADER - PAGE.SAFETY -
+    (p === 0 ? fullHeader : PAGE.CONDENSED_HEADER);
+  const tail = tailHeight_(inv, branding);
+  const continued = g => ({ type: 'group', group: g, continued: true, h: PAGE.GROUP_ROW });
+
+  const pages = [{ rows: [], used: 0 }];
+  rows.forEach((r, i) => {
+    let page = pages[pages.length - 1];
+    const need = r.type === 'group' && rows[i + 1] ? r.h + rows[i + 1].h : r.h; // keep a heading with its next line
+    if (page.rows.length && page.used + need > budget(pages.length - 1)) {
+      page = { rows: [], used: 0 };
+      pages.push(page);
+      if (r.type === 'line' && r.group.value) { const c = continued(r.group); page.rows.push(c); page.used += c.h; }
+    }
+    page.rows.push(r);
+    page.used += r.h;
+  });
+
+  // The last page needs room for the summary, totals and footer: if it doesn't
+  // fit, move its last line (with a heading right before it) to a new page.
+  const last = pages[pages.length - 1];
+  if (last.used + tail > budget(pages.length - 1) && last.rows.some(r => r.type === 'line')) {
+    const moved = [];
+    while (last.rows.length) {
+      const r = last.rows.pop();
+      last.used -= r.h;
+      moved.unshift(r);
+      if (r.type === 'line') {
+        const prev = last.rows[last.rows.length - 1];
+        if (prev && prev.type === 'group') { last.rows.pop(); last.used -= prev.h; moved.unshift(prev); }
+        break;
+      }
+    }
+    if (moved[0].type === 'line' && moved[0].group.value) moved.unshift(continued(moved[0].group));
+    if (!last.rows.some(r => r.type === 'line')) pages.pop(); // nothing left there: drop the empty page
+    pages.push({ rows: moved, used: 0 });
+  }
+  return pages.map(p => p.rows);
+}
+
+function headerDetailsHtml_(inv, L) {
+  const vals = [inv.number, inv.clientNumber, formatDate_(inv.invoiceDate), formatDate_(inv.dueDate)];
+  return '<table class="hdr-details" style="width:auto;margin-left:auto">' +
+    L.headerLabels.map((label, i) =>
+      '<tr><td class="lbl">' + esc_(label) + '</td><td class="val">' + esc_(vals[i] || '') + '</td></tr>').join('') +
+    '</table>';
+}
+
+function logoHtml_(branding, heightPt) {
+  return branding.logo ? '<img src="' + branding.logo + '" style="height:' + heightPt + 'pt" alt="">' : '';
+}
+
+/** Full header (page 1): logo + invoice details, client block + company block, confidentiality phrase. */
+function headerHtml_(inv, L, branding) {
+  const lines = arr => arr.map(s => '<div>' + esc_(s).replace(/ {2}/g, ' &nbsp;') + '</div>').join('');
+  const client = '<div class="name">' + esc_(inv.customerName || '') + '</div>' +
+    (inv.attention ? '<div>' + esc_(L.attn) + ' ' + esc_(inv.attention) + '</div>' : '') +
+    lines(formatClientAddress_(inv.address));
+  const co = branding.company;
+  const company = (co.address.length ? '<div class="name">' + esc_(co.address[0]) + '</div>' + lines(co.address.slice(1)) : '') +
+    (co.phone ? '<div>' + esc_(L.phonePrefix + co.phone) + '</div>' : '') +
+    co.gov.map(g => '<div class="gov">' + esc_(g) + '</div>').join('');
+  return '<table class="hdr">' +
+    '<tr><td style="width:50%;height:58pt">' + logoHtml_(branding, 54) + '</td>' +
+      '<td style="width:50%">' + headerDetailsHtml_(inv, L) + '</td></tr>' +
+    '<tr><td class="block" style="padding-top:10pt">' + client + '</td>' +
+      '<td class="block company" style="padding-top:10pt">' + company + '</td></tr>' +
+    '<tr><td colspan="2" class="confidential">' + esc_(L.confidential) + '</td></tr>' +
+    '</table>';
+}
+
+/** Condensed header (pages 2+): small logo + invoice details, client name. */
+function condensedHeaderHtml_(inv, L, branding) {
+  return '<table class="hdr">' +
+    '<tr><td style="width:50%">' + logoHtml_(branding, 32) +
+      '<div class="name" style="margin-top:4pt">' + esc_(inv.customerName || '') + '</div></td>' +
+      '<td style="width:50%">' + headerDetailsHtml_(inv, L) + '</td></tr>' +
+    '</table>';
+}
+
+/** The 8-column body table for one page's rows. */
+function itemsTableHtml_(rows, inv, L) {
+  const widths = [22, 11, 11, 15, 10, 8, 10, 13];
+  const num = [false, false, false, false, false, true, true, true];
+  const head = '<tr>' + L.columns.map((c, i) =>
+    '<th' + (num[i] ? ' class="num"' : '') + ' style="width:' + widths[i] + '%">' + esc_(c) + '</th>').join('') + '</tr>';
+  const labels = inv.detailLabels || [];
+  const nl2br = s => esc_(s).replace(/\r?\n/g, '<br>');
+  let stripe = 0;
+  const body = rows.map(r => {
+    if (r.type === 'group') {
+      stripe = 0;
+      return '<tr class="grp"><td colspan="8">' + esc_(inv.groupLabel) + ': ' + esc_(r.group.value) +
+        (r.continued ? ' ' + esc_(L.continued) : '') + '</td></tr>';
+    }
+    const ln = r.line;
     const details = labels.map((label, d) => ln.details[d] && ln.details[d].length
-      ? '<div class="detail">' + esc_(label) + esc_(L.labelSep) + nl2br(ln.details[d].join(', ')) + '</div>'
-      : '').join('');
-    return '<tr class="' + (i % 2 ? 'alt' : '') + '">' +
-      '<td>' + title + details + '</td>' +
-      (hasDates ? '<td class="date">' + esc_(formatDateSpan_(ln.dates, L)) + '</td>' : '') +
-      '<td class="num">' + formatQty_(ln.quantity, lang) + '</td>' +
-      '<td class="num">' + money(ln.unitPrice) + '</td>' +
-      '<td class="num">' + money(ln.amount) + '</td>' +
+      ? '<div class="detail">' + esc_(label) + ': ' + nl2br(ln.details[d].join(', ')) + '</div>' : '').join('');
+    return '<tr' + (stripe++ % 2 ? ' class="alt"' : '') + '>' +
+      '<td>' + nl2br(ln.candidate) + details + '</td>' +
+      '<td>' + esc_(ln.workOrder) + '</td>' +
+      '<td>' + esc_(ln.purchaseOrder) + '</td>' +
+      '<td>' + esc_(formatDateSpan_(ln.dates)) + '</td>' +
+      '<td>' + esc_(ln.lineType) + '</td>' +
+      '<td class="num">' + formatQty_(ln.quantity) + '</td>' +
+      '<td class="num">' + esc_(formatMoney_(ln.unitPrice)) + '</td>' +
+      '<td class="num">' + esc_(formatMoney_(ln.amount)) + '</td>' +
     '</tr>';
   }).join('');
-  const dateHeader = opts.combineEmployees ? L.period : L.workDate;
+  return '<table class="items">' + head + body + '</table>';
+}
 
-  const meta = [
-    [L.invoiceNo, inv.number],
-    [L.date, formatDate_(inv.invoiceDate, L)],
-    [L.due, formatDate_(inv.dueDate, L)],
-  ].filter(p => p[1])
-    .map(p => '<tr><td class="label">' + esc_(p[0]) + '</td><td class="num">' + esc_(p[1]) + '</td></tr>')
-    .join('');
+/** Units summary (left) and subtotal / taxes / total (right). */
+function summaryTotalsHtml_(inv, L) {
+  const units = '<div class="section">' + esc_(L.summaryTitle) + '</div>' +
+    '<table class="units" style="width:auto"><tr><th>' + esc_(L.summaryCols[0]) + '</th><th class="num">' +
+    esc_(L.summaryCols[1]) + '</th></tr>' +
+    inv.unitsSummary.map(r => '<tr><td>' + esc_(r.type) + '</td><td class="num">' + formatQty_(r.units) + '</td></tr>').join('') +
+    '</table>';
+  const taxRows = inv.taxes.map(t =>
+    '<tr><td>' + esc_(L.taxes[t.key] + (t.ratePct == null ? '' : ' (' + formatQty_(t.ratePct) + '%)')) +
+    '</td><td class="num">' + esc_(formatMoney_(t.amount)) + '</td></tr>').join('');
+  const totals = '<table class="totals">' +
+    '<tr><td>' + esc_(L.subtotal) + '</td><td class="num">' + esc_(formatMoney_(inv.subtotal)) + '</td></tr>' +
+    taxRows +
+    '<tr class="grand"><td>' + esc_(L.total) + '</td><td class="num">' + esc_(formatMoney_(inv.total)) + '</td></tr>' +
+    '</table>';
+  return '<table style="margin-top:14pt"><tr>' +
+    '<td style="width:50%">' + units + '</td>' +
+    '<td style="width:15%"></td>' +
+    '<td style="width:35%">' + totals + '</td>' +
+    '</tr></table>';
+}
 
-  const taxName = opts.taxName || L.tax;
-
-  return '' +
-    // Header: company on the left, INVOICE/FACTURE + meta on the right
-    '<table><tr>' +
-      '<td style="width:55%">' +
-        (opts.companyName ? '<div class="company">' + esc_(opts.companyName) + '</div>' : '') +
-        (opts.companyAddress ? '<div class="muted">' + nl2br(opts.companyAddress) + '</div>' : '') +
-        (opts.companyEmail ? '<div class="muted">' + esc_(opts.companyEmail) + '</div>' : '') +
-      '</td>' +
-      '<td style="width:45%;text-align:right">' +
-        '<div class="title">' + esc_(L.invoice) + '</div>' +
-        '<table style="width:auto;margin-left:auto;margin-top:6px">' + meta + '</table>' +
-      '</td>' +
-    '</tr></table>' +
-
-    // Bill to
-    '<div style="margin-top:28px">' +
-      '<div class="section">' + esc_(L.billTo) + '</div>' +
-      '<div style="font-weight:bold">' + esc_(inv.customerName || '') + '</div>' +
-      (inv.customerAddress ? '<div class="muted">' + nl2br(inv.customerAddress) + '</div>' : '') +
-      (inv.customerEmail ? '<div class="muted">' + esc_(inv.customerEmail) + '</div>' : '') +
-    '</div>' +
-
-    // Line items
-    '<table class="items" style="margin-top:24px">' +
-      '<tr><th style="width:' + (hasDates ? '44' : '55') + '%">' + esc_(L.description) + '</th>' +
-      (hasDates ? '<th>' + esc_(dateHeader) + '</th>' : '') +
-      '<th class="num">' + esc_(L.qty) + '</th>' +
-      '<th class="num">' + esc_(L.unitPrice) + '</th><th class="num">' + esc_(L.amount) + '</th></tr>' +
-      itemRows +
-    '</table>' +
-
-    // Totals
-    '<table style="margin-top:12px"><tr><td style="width:55%"></td><td>' +
-      '<table class="totals">' +
-        '<tr><td>' + esc_(L.subtotal) + '</td><td class="num">' + money(inv.subtotal) + '</td></tr>' +
-        (inv.taxRatePct ? '<tr><td>' + esc_(taxName) + ' (' + formatQty_(inv.taxRatePct, lang) +
-          (lang === 'fr' ? ' %' : '%') + ')</td><td class="num">' +
-          money(inv.tax) + '</td></tr>' : '') +
-        '<tr class="grand"><td>' + esc_(L.totalDue) + '</td><td class="num">' + money(inv.total) + '</td></tr>' +
-      '</table>' +
-    '</td></tr></table>' +
-
-    (inv.notes ? '<div class="notes"><div class="section">' + esc_(L.notes) + '</div>' + nl2br(inv.notes) + '</div>' : '') +
-    (opts.footer ? '<div class="footer">' + nl2br(opts.footer) + '</div>' : '');
+/** Invoice footer: bank block, remittance line, disclosure. Empty settings print nothing. */
+function footerHtml_(f) {
+  if (!f || !(f.paymentTitle || f.bankAddress.length || f.bankDetails.length || f.remittance || f.disclosure)) return '';
+  const left = (f.paymentTitle ? '<div class="pay">' + esc_(f.paymentTitle) + '</div>' : '') +
+    f.bankAddress.map(s => '<div>' + esc_(s) + '</div>').join('');
+  const right = f.bankDetails.length
+    ? '<table class="bank" style="width:auto;margin-left:auto">' + f.bankDetails.map(p =>
+        '<tr><td class="lbl">' + esc_(p[0]) + (p[0] ? ':' : '') + '</td><td class="val">' + esc_(p[1]) + '</td></tr>').join('') +
+      '</table>'
+    : '';
+  return '<div class="footer" style="page-break-inside:avoid">' +
+    '<table><tr><td style="width:55%">' + left + '</td><td style="width:45%">' + right + '</td></tr></table>' +
+    (f.remittance ? '<div class="remit">' + esc_(f.remittance) + '</div>' : '') +
+    (f.disclosure ? '<div class="disclosure">' + esc_(f.disclosure) + '</div>' : '') +
+    '</div>';
 }
 
 // ---------------------------------------------------------------------------
@@ -1229,16 +1901,11 @@ function createJobFolder_(sourceName, jobId) {
 }
 
 function saveSettings_(mapping, options) {
-  const o = Object.assign({}, options || {});
   PropertiesService.getUserProperties()
-    .setProperty(settingsKey_(), JSON.stringify({ mapping: mapping || {}, options: o }));
+    .setProperty(settingsKey_(), JSON.stringify(sanitizeFormState_(mapping, options)));
 }
 
-/**
- * Settings are keyed by the signed-in user's email. With "Execute as: user
- * accessing" user properties are already per user; the key also keeps users
- * apart if someone deploys the app as "Execute as: me".
- */
+/** Saved settings are keyed by the signed-in user's email (user properties are per user anyway). */
 function settingsKey_() {
   const email = currentUserEmail_().toLowerCase();
   return email ? 'settings:' + email : 'settings';
@@ -1254,13 +1921,17 @@ function currentUserEmail_() {
 
 // ---- Spreadsheet metadata (hidden "_meta" tab) and rebuild locking ----
 
+const META_JSON_KEYS = ['files', 'taxRates'];
+
 function readMeta_(ss) {
   const sh = ss.getSheetByName(META_SHEET);
   if (!sh) return null;
   const meta = {};
   sh.getDataRange().getValues().forEach(r => { if (r[0] !== '') meta[r[0]] = r[1]; });
   if (!meta.folderId) return null;
-  try { meta.files = meta.files ? JSON.parse(meta.files) : {}; } catch (e) { meta.files = {}; }
+  META_JSON_KEYS.forEach(k => {
+    try { meta[k] = meta[k] ? JSON.parse(meta[k]) : (k === 'files' ? {} : null); } catch (e) { meta[k] = k === 'files' ? {} : null; }
+  });
   return meta;
 }
 
@@ -1273,7 +1944,7 @@ function writeMeta_(ss, meta) {
     sh.hideSheet();
   }
   const rows = Object.keys(meta).map(k =>
-    [k, k === 'files' ? JSON.stringify(meta[k] || {}) : String(meta[k] == null ? '' : meta[k])]);
+    [k, META_JSON_KEYS.indexOf(k) !== -1 ? JSON.stringify(meta[k] || (k === 'files' ? {} : null)) : String(meta[k] == null ? '' : meta[k])]);
   sh.clearContents();
   sh.getRange(1, 1, rows.length, 2).setNumberFormat('@').setValues(rows);
 }
@@ -1368,16 +2039,18 @@ function indexToCol_(i) {
  * When a value has both "," and ".", whichever comes last is the decimal
  * separator. When it has only one kind, decimalComma decides: true reads
  * "14,975" as 14.975 (French), false reads it as 14975 (English).
+ * Text with letters (e.g. "8 hrs", "n/a") is invalid.
  */
 function parseNumber_(v, decimalComma) {
   if (typeof v === 'number') return v;
   let s = String(v == null ? '' : v).trim();
   if (!s) return NaN;
+  if (/[A-Za-zÀ-ÿ]/.test(s.replace(/(CAD|USD|EUR)/gi, ''))) return NaN;
   let negative = false;
   if (/^\(.*\)$/.test(s)) { negative = true; s = s.slice(1, -1); }
-  s = s.replace(/[\s\u00A0\u202F']/g, '');     // spaces (incl. French no-break spaces) and 1'234 style
+  s = s.replace(/[\s  ']/g, '');     // spaces (incl. French no-break spaces) and 1'234 style
   if (/^[^\d.,]*-/.test(s)) negative = !negative; // leading minus, e.g. "-$5" or "$-5"
-  s = s.replace(/[^0-9.,]/g, '');              // drop currency symbols, %, letters
+  s = s.replace(/[^0-9.,]/g, '');              // drop currency symbols and %
   if (!s || !/\d/.test(s)) return NaN;
 
   const lastComma = s.lastIndexOf(',');
@@ -1399,31 +2072,18 @@ function parseNumber_(v, decimalComma) {
 
 function round2_(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 
-/** en: $1,234.50   fr: 1 234,50 $ */
-function formatMoney_(n, symbol, lang) {
+/** Money, the same in both languages: $1,234.50 / -$50.00 */
+function formatMoney_(n) {
   const sign = n < 0 ? '-' : '';
   const parts = Math.abs(round2_(n)).toFixed(2).split('.');
-  const sym = symbol == null ? '$' : String(symbol);
-  if (lang === 'fr') {
-    const intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
-    return sign + intPart + ',' + parts[1] + (sym ? ' ' + sym : '');
-  }
-  return sign + sym + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
+  return sign + '$' + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
 }
 
-function formatQty_(n, lang) {
-  const s = String(Math.round(n * 1000) / 1000);
-  return lang === 'fr' ? s.replace('.', ',') : s;
-}
-
-/** Formats yyyy-mm-dd dates in the chosen language; anything else is shown as written. */
-function formatDate_(value, L) {
-  const s = String(value || '').trim();
-  const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/);
-  if (!m) return s;
-  const y = +m[1], mo = +m[2], d = +m[3];
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return s;
-  return L.formatDate(y, mo, d, L.months);
+/** Units and percentages, the same in both languages: 24.5, 1,250, 9.975 */
+function formatQty_(n) {
+  const r = Math.round(Number(n) * 1000) / 1000;
+  const parts = String(Math.abs(r)).split('.');
+  return (r < 0 ? '-' : '') + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (parts[1] ? '.' + parts[1] : '');
 }
 
 function esc_(s) {
