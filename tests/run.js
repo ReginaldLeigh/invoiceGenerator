@@ -713,6 +713,30 @@ test('different column layouts (samples 8 and 9) give the same invoices as the s
   assert.strictEqual(parse('sample-9-layout-c.csv', LAYOUT_C).grouped.invoices[0].groupLabel, 'Projet');
 });
 
+console.log('Version 3.2 — preview width');
+
+test('preview shows up to column BB and reports the total column count', () => {
+  const wide = (n, rows) => {
+    const cols = Array.from({ length: n }, (_, i) => 'Col' + (i + 1));
+    const lines = [cols.join(',')].concat(Array.from({ length: rows }, (_, r) => cols.map((_, i) => 'r' + r + 'c' + i).join(',')));
+    return { name: 'wide.csv', base64: Buffer.from(lines.join('\n')).toString('base64') };
+  };
+  const p60 = gas.previewFile(wide(60, 10));
+  assert.strictEqual(p60.columns.length, 54);
+  assert.strictEqual(p60.columns[53], 'BB');
+  assert.strictEqual(p60.totalColumns, 60);
+  assert.strictEqual(p60.rows.length, 6);
+  assert.strictEqual(p60.rows[0][53], 'Col54');
+  assert.strictEqual(p60.totalRows, 11);
+  const p25 = gas.previewFile(wide(25, 3));
+  assert.strictEqual(p25.columns.length, 25);
+  assert.strictEqual(p25.columns[24], 'Y');
+  assert.strictEqual(p25.totalColumns, 25);
+  // Columns after BB can still be mapped and read.
+  const t = gas.normalizeMapping_(Object.assign({}, MAP, { details: [{ col: 'BH' }] }));
+  assert.strictEqual(t.details[0].index, 59);
+});
+
 if (process.argv.includes('--html')) {
   const out = path.join(__dirname, 'out');
   fs.mkdirSync(out, { recursive: true });
