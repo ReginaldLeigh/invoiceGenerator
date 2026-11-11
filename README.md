@@ -11,7 +11,8 @@ A link is emailed (in English) to the person who submitted the form.
 ## How it works
 
 1. **Presets (optional).** Pick a saved preset to fill in the whole form. Your *default* preset fills it in as soon as the page opens, so for a fixed export format the routine is: **open the page → upload the file → Generate**.
-2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows with column letters. With **Pin preview** on (the default on computers, off on phones; your choice is remembered), the preview stays at the top of the screen while you fill in the rest of the form. Rows hidden in Excel (by a filter or by hand) are left out.
+2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows with column letters, up to column **BB**. Columns after BB aren't shown, but you can still type their letters (e.g. `BC`) in the boxes. With **Pin preview** on (the default on computers, off on phones; your choice is remembered), the preview stays at the top of the screen while you fill in the rest of the form. Rows hidden in Excel (by a filter or by hand) are left out.
+   - **Clear form** (top of the form, click twice) resets every column box, label and option and deselects the preset. The uploaded file, saved presets and the default preset stay.
 3. **Match columns.** Type a column letter for each field, or click a box and then a column letter in the preview. ✱ = required.
    - **Invoice:** Invoice number ✱, Client number, Invoice date, Payment due date
    - **Client (bill to):** Client name ✱, Attention (ATTN), Address 1, Address 2, Address 3, Address 4, City, State / Province, Postal code, Country

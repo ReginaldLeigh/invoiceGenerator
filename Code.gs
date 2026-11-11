@@ -25,7 +25,7 @@
 const ROOT_FOLDER_NAME = 'Invoice PDFs';
 const ROOT_FOLDER_KEY = 'rootFolderId';
 const MAX_PREVIEW_ROWS = 6;
-const MAX_PREVIEW_COLS = 40;
+const MAX_PREVIEW_COLS = 54; // the preview shows columns A–BB (later columns can still be mapped by letter)
 const MAX_EMAIL_LINKS = 50;
 const META_SHEET = '_meta';
 const REBUILD_TIMEOUT_MS = 7 * 60 * 1000; // a run can't last longer than 6 minutes
@@ -311,13 +311,15 @@ function previewFile(file) {
   return withRun_('previewFile', run => {
     run.context.file = fileInfo_(file);
     const rows = readRows_(file, 'preview-' + run.id).rows;
-    const width = Math.min(MAX_PREVIEW_COLS, rows.reduce((w, r) => Math.max(w, r.length), 0));
+    const totalColumns = rows.reduce((w, r) => Math.max(w, r.length), 0);
+    const width = Math.min(MAX_PREVIEW_COLS, totalColumns);
     const columns = [];
     for (let i = 0; i < width; i++) columns.push(indexToCol_(i));
     return {
       columns: columns,
       rows: rows.slice(0, MAX_PREVIEW_ROWS).map(r => columns.map((_, i) => r[i] == null ? '' : String(r[i]))),
       totalRows: rows.length,
+      totalColumns: totalColumns,
     };
   });
 }

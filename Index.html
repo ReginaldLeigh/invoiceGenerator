@@ -87,6 +87,8 @@
     .dock .preview-wrap { max-height:180px; overflow:auto; margin-top:6px; background:#fff; box-shadow:0 2px 6px rgba(0,0,0,.06); }
     .dock .preview th { position:sticky; top:0; z-index:1; }
     @media (max-width:700px) { .dock .preview-wrap { max-height:120px; } }
+    .clear-bar { display:flex; justify-content:flex-end; align-items:center; gap:12px; flex-wrap:wrap; margin:0 0 8px; }
+    button.secondary.armed { background:var(--accent); color:#fff; }
     .match { background:#ecfdf3; border:1px solid #abefc6; border-radius:6px; padding:8px 12px; margin-top:12px; font-size:13px; color:var(--ok); }
   </style>
 </head>
@@ -135,6 +137,13 @@
     </div>
     <p class="status" id="presetStatus" role="status" aria-live="polite"></p>
   </section>
+
+  <!-- Clear form: resets the column boxes and options; keeps the file and saved presets -->
+  <div class="clear-bar">
+    <span class="preview-note" style="margin:0">Clears the column boxes and options. Your file and saved presets stay.</span>
+    <button type="button" class="secondary" id="clearForm">Clear form</button>
+  </div>
+  <p class="status" id="clearStatus" role="status" aria-live="polite" style="text-align:right;margin:-6px 0 10px"></p>
 
   <!-- Step 1: Upload -->
   <section class="card">
@@ -695,6 +704,12 @@
     var ghead = useHeader && gidx >= 0 && previewHeader[gidx] ? previewHeader[gidx] : '';
     document.getElementById('groupLabel').placeholder = ghead || 'Heading label (optional)';
   }
+  /** 0 → "A", 53 → "BB" */
+  function colLetter(i) {
+    var s = '';
+    for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+    return s;
+  }
   function colIndex(letters) {
     var x = 0;
     for (var i = 0; i < letters.length; i++) x = x * 26 + (letters.charCodeAt(i) - 64);
@@ -725,9 +740,15 @@
         if (next) next.focus(); else lastFocused.focus();
       });
     });
+    // Describe exactly what's shown: rows, and the column range (the preview stops at BB).
+    var lastCol = p.columns[p.columns.length - 1] || 'A';
+    var total = p.totalColumns || p.columns.length;
     document.getElementById('previewNote').textContent =
-      'Showing ' + p.rows.length + ' of ' + p.totalRows + ' rows' +
-      (p.columns.length >= 26 ? ' (first 26 columns)' : '') + '.';
+      'Showing ' + p.rows.length + ' of ' + p.totalRows + ' rows · columns A–' + lastCol +
+      (total > p.columns.length
+        ? ' of ' + total + '. Columns after ' + lastCol + ' aren\'t shown here, but you can still type their letters (e.g. ' +
+          colLetter(p.columns.length) + ') in the boxes below.'
+        : '.');
     document.getElementById('previewArea').classList.remove('hidden');
     document.getElementById('previewDock').classList.remove('hidden');
     highlightMapped();
@@ -821,6 +842,42 @@
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
+  // ---------- Clear form ----------
+  // Two clicks (no pop-up): resets every column box, label and option to the blank form
+  // and deselects the preset. The uploaded file, its preview, saved presets, the default
+  // preset, tax rates and the pin setting are left alone.
+  var clearTimer = null;
+  document.getElementById('clearForm').addEventListener('click', function () {
+    var btn = this;
+    if (busy || !FORM_DEFAULTS) return;
+    if (!btn.classList.contains('armed')) {
+      btn.classList.add('armed');
+      btn.textContent = 'Click again to clear';
+      clearTimer = setTimeout(disarmClear, 4000);
+      return;
+    }
+    disarmClear();
+    applyFormState(FORM_DEFAULTS);
+    activePreset = null;
+    presetDirty = false;
+    presetSelect.value = '';
+    updatePresetButtons();
+    document.getElementById('presetSaveRow').classList.add('hidden');
+    document.getElementById('presetName').value = '';
+    checkHeaders();
+    ['status', 'presetStatus', 'rebuildStatus'].forEach(function (id) { setStatus('', id); });
+    document.getElementById('results').classList.add('hidden');
+    setStatus(fileData ? 'Form cleared. Your file is still loaded.' : 'Form cleared.', 'clearStatus', 'ok');
+    setTimeout(function () { setStatus('', 'clearStatus'); }, 6000);
+    document.getElementById('mappingForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  });
+  function disarmClear() {
+    clearTimer && clearTimeout(clearTimer);
+    var btn = document.getElementById('clearForm');
+    btn.classList.remove('armed');
+    btn.textContent = 'Clear form';
+  }
+
   // ---------- Pinned preview ----------
   // Pinned by default on wide screens, not on phones; the choice is remembered in this browser.
   (function () {
@@ -910,6 +967,7 @@
     busy = on;
     document.getElementById('generate').disabled = on;
     document.getElementById('rebuildBtn').disabled = on;
+    document.getElementById('clearForm').disabled = on;
     fileInput.disabled = on;
     var rebuilding = on && mode === 'rebuild';
     document.getElementById('btnLabel').innerHTML = on && !rebuilding ? '<span class="spinner"></span>Generating…' : 'Generate invoice PDFs';
