@@ -526,7 +526,7 @@ const I18N = {
     taxCodes: ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'],
     gov: [['gstHst', 'TVH/TPS # '], ['qst', 'TVQ # '], ['quebecPermit', 'Permis QC ']],
     phonePrefix: 'T. ',
-    footerLabels: { paymentTitle: 'Paiement par TEF', bankId: 'N° d\'institution bancaire', transit: 'N° transit succursale bancaire', account: 'N° de compte' },
+    footerLabels: { paymentTitle: 'Paiement par TEF', bankId: 'N° d\'institution bancaire', transit: 'N° succursale bancaire', account: 'N° de compte' },
     unitsTotal: 'Total',
     continued: '(suite)',
     page: (n, of) => 'Page ' + n + ' de ' + of,
