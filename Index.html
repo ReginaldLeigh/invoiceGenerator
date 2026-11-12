@@ -19,6 +19,8 @@
     .drop input { display:none; }
     .drop strong { color:var(--accent); }
     .filename { margin-top:8px; font-weight:600; }
+    .file-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:10px; }
+    .file-bar .preview-note { margin:0; }
     .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px 16px; }
     label { display:block; font-weight:600; font-size:13px; margin-bottom:4px; }
     label .req { color:var(--err); }
@@ -154,6 +156,14 @@
       <div><strong>Choose a file</strong> or drag it here</div>
       <div class="filename" id="filename"></div>
     </label>
+    <!-- Shown once a file is loaded. Reload opens the file picker again (the same file name works);
+         Remove unloads the file and its preview but keeps everything typed in the form. -->
+    <div id="fileBar" class="file-bar hidden">
+      <button type="button" class="secondary" id="reloadFile">Reload file</button>
+      <button type="button" class="secondary" id="removeFile">Remove file</button>
+      <span class="preview-note">Changed the file? Save it, click <strong>Reload file</strong> and choose it again.</span>
+      <span class="status" id="fileStatus"></span>
+    </div>
     <div id="previewArea" class="hidden">
       <p class="preview-note" id="previewNote"></p>
       <div id="headerCheck" class="hidden"></div>
@@ -674,7 +684,12 @@
   // ---------- File handling ----------
   var drop = document.getElementById('drop');
   var fileInput = document.getElementById('file');
-  fileInput.addEventListener('change', function () { if (fileInput.files[0]) loadFile(fileInput.files[0]); });
+  fileInput.addEventListener('change', function () {
+    var f = fileInput.files[0];
+    // Empty the picker straight away, so choosing the same file again (after editing it) still counts as a change.
+    fileInput.value = '';
+    if (f) loadFile(f);
+  });
   ['dragenter','dragover'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); }); });
   ['dragleave','drop'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
   drop.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
@@ -683,8 +698,11 @@
     if (busy) { showError('Please wait for the current job to finish.'); return; }
     if (!/\.(csv|xlsx|xls)$/i.test(file.name)) { showError('Please choose a .csv or .xlsx file.'); return; }
     if (file.size > 20 * 1024 * 1024) { showError('That file is over 20 MB. Please split it into smaller files.'); return; }
+    var again = !!fileData && fileData.name === file.name;
     document.getElementById('filename').textContent = file.name;
+    document.getElementById('fileBar').classList.remove('hidden');
     setStatus('Reading file…');
+    setStatus('', 'fileStatus');
     var token = ++previewToken;
     fileData = null;
     var reader = new FileReader();
@@ -692,13 +710,41 @@
       if (token !== previewToken) return;
       fileData = { name: file.name, base64: String(reader.result).split(',')[1] };
       google.script.run
-        .withSuccessHandler(function (p) { if (token === previewToken) { renderPreview(p); setStatus(''); } })
-        .withFailureHandler(function (err) { if (token === previewToken) showError(err); })
+        .withSuccessHandler(function (p) {
+          if (token !== previewToken) return;
+          renderPreview(p);
+          setStatus('');
+          setStatus((again ? 'Reloaded ' : 'Loaded ') + file.name + ' (' + p.totalRows + ' row' + (p.totalRows === 1 ? '' : 's') + ').',
+            'fileStatus', 'ok');
+        })
+        .withFailureHandler(function (err) { if (token === previewToken) { setStatus(''); showError(err, 'fileStatus'); } })
         .previewFile(fileData);
     };
-    reader.onerror = function () { showError('Could not read that file.'); };
+    reader.onerror = function () {
+      if (token === previewToken) { setStatus(''); showError('Could not read that file. If you just edited it, close it in Excel and try again.', 'fileStatus'); }
+    };
     reader.readAsDataURL(file);
   }
+
+  /** Unloads the file and its preview. Column letters, labels and options stay as they are. */
+  function removeFile() {
+    if (busy) return;
+    previewToken++;                // ignore a preview that's still on its way
+    fileData = null;
+    fileInput.value = '';
+    previewHeader = [];
+    document.getElementById('filename').textContent = '';
+    document.getElementById('preview').innerHTML = '';
+    document.getElementById('previewNote').textContent = '';
+    ['previewArea', 'previewDock', 'fileBar'].forEach(function (id) { document.getElementById(id).classList.add('hidden'); });
+    fillLabels();                  // labels filled in from the old file's headers go; typed labels stay
+    checkHeaders();
+    setStatus('');
+    setStatus('File removed. Choose a file to continue.', 'clearStatus', 'ok');
+    setTimeout(function () { setStatus('', 'clearStatus'); }, 6000);
+  }
+  document.getElementById('removeFile').addEventListener('click', removeFile);
+  document.getElementById('reloadFile').addEventListener('click', function () { if (!busy) fileInput.click(); });
 
   /** Each label box with its column box: the 10 extra details, then the group heading. */
   function labelPairs() {
@@ -989,6 +1035,8 @@
     document.getElementById('rebuildBtn').disabled = on;
     document.getElementById('clearForm').disabled = on;
     fileInput.disabled = on;
+    document.getElementById('reloadFile').disabled = on;
+    document.getElementById('removeFile').disabled = on;
     var rebuilding = on && mode === 'rebuild';
     document.getElementById('btnLabel').innerHTML = on && !rebuilding ? '<span class="spinner"></span>Generating…' : 'Generate invoice PDFs';
     document.getElementById('rebuildLabel').innerHTML = rebuilding ? '<span class="spinner"></span>Rebuilding…' : 'Rebuild PDF';
