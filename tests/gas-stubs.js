@@ -118,7 +118,7 @@ function makeSheet(ss, name) {
   const grid = [];
   const sheetId = ++idCounter;
   const sh = {
-    grid, name, hidden: false, validations: {}, formulas: {},
+    grid, name, hidden: false, validations: {}, formulas: {}, notes: {},
     getName: () => sh.name,
     setName: n => { sh.name = n; return sh; },
     getSheetId: () => sheetId,
@@ -159,7 +159,7 @@ function makeRange(sh, r0, c0, nr, nc) {
     })),
     getDisplayValues: () => range.getValues().map(r => r.map(v => String(v))),
     setNumberFormat: () => range, setFontWeight: () => range, setBackground: () => range,
-    setFontColor: () => range, setNote: () => range, setWrap: () => range,
+    setFontColor: () => range, setNote: n => { sh.notes[r0 + ',' + c0] = n; return range; }, setWrap: () => range,
     setDataValidation: dv => { sh.validations[r0 + ',' + c0] = dv; return range; },
   };
   return range;
@@ -284,7 +284,7 @@ function loadCode(opts) {
   vm.runInContext(fs.readFileSync(path.join(root, 'Config.gs'), 'utf8'), ctx, { filename: 'Config.gs' });
   vm.runInContext(fs.readFileSync(path.join(root, 'Code.gs'), 'utf8'), ctx, { filename: 'Code.gs' });
   // Top-level consts aren't properties of the context; expose the ones tests need.
-  vm.runInContext('this.T = { I18N, CONFIG, PAGE, DEFAULT_TAX_RATES, SHEET_MAP, FIELDS };', ctx);
+  vm.runInContext('this.T = { I18N, CONFIG, PAGE, DEFAULT_TAX_RATES, SHEET_MAP, FIELDS, ROOT_FOLDER_NAME };', ctx);
   ctx.__setUser = email => { state.email = email; };
   ctx.__world = world;
   return ctx;

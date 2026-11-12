@@ -434,8 +434,8 @@ test('switching to a combined PDF trashes the per-invoice one but keeps the orig
   gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
   const live = folderOf(res).files().filter(f => !f.trashed).map(f => f.getName());
   assert.ok(live.some(n => n.indexOf('Original data - ') === 0));
-  assert.ok(live.indexOf('Invoice INV-3001.pdf') !== -1, live.join(' | '));
-  assert.ok(!live.some(n => n === 'Invoice INV-3001 - Maple Productions.pdf'));
+  const pdfs = live.filter(n => /\.pdf$/.test(n));
+  assert.deepStrictEqual(pdfs, ['INV-3001 - Maple Productions.pdf'], 'one combined PDF, the per-invoice one trashed: ' + live.join(' | '));
 });
 
 test('older spreadsheets get the "generate again" message', () => {
@@ -529,7 +529,7 @@ test('defaults: one PDF per invoice and English', () => {
 test('emails are English even for French invoices; no-reply sender name and line; no Reply-To', () => {
   generate('sample-2-quebec-fr.csv', MAP, { language: 'fr' });
   const m = world.emails[0];
-  assert.strictEqual(m.name, 'Invoice PDF Generator (no reply)');
+  assert.strictEqual(m.name, 'Morph - Invoice PDF Generator (no reply)');
   assert.strictEqual(m.replyTo, undefined);
   has(m.subject, 'Your 2 invoice PDFs are ready');
   has(m.htmlBody, 'invoices were created from');
@@ -570,7 +570,7 @@ test('unexpected error: logged with stack, emailed to DEV_EMAIL once per 10 minu
   assert.strictEqual(errLog.entry.stageReached, 'folder_created');
   let dev = world.emails.filter(m => m.to === 'reggie.leigh@gmail.com');
   assert.strictEqual(dev.length, 1);
-  has(dev[0].subject, '[Invoice PDF Generator] Error in generateInvoices (run ');
+  has(dev[0].subject, '[Morph - Invoice PDF Generator] Error in generateInvoices (run ');
   ['Run id:', 'User:          ' + OWNER, 'Stage reached: folder_created', 'sample-1-basic-en.csv', 'Error: Drive is down']
     .forEach(t => has(dev[0].body, t));
   hasNot(dev[0].body, 'Northwind', 'file contents never included');
@@ -802,22 +802,112 @@ test('sheet: blank labels are written as "(no label)"; rebuild keeps them blank;
   has(pdf, '<td colspan="8">P-1001</td>', 'rebuild: still value only');
   hasNot(pdf, '(no label)');
   sh.grid[0][23] = 'Projet';
-  sh.grid[0][24] = '(SANS ÉTIQUETTE)'; // either language's marker, any case
+  sh.grid[0][24] = '(NO LABEL)'; // any case
   gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
   pdf = pdfHtml(res).join('');
   has(pdf, 'Projet: P-1001', 'renamed marker = label appears');
-  hasNot(pdf, 'ÉTIQUETTE');
+  hasNot(pdf, 'NO LABEL');
   assert.ok(/<div class="detail">Stage \d/.test(pdf));
   sh.grid[0][23] = '';
   gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
   hasNot(pdfHtml(res).join(''), 'P-1001</td></tr>', 'empty X header still turns grouping off');
 });
 
-test('French sheet uses "(sans étiquette)"', () => {
+console.log('Version 3.4 — English outside the invoice, Morph naming, file names');
+
+test('French job: the spreadsheet is English (tax dropdown stays French); the invoice is French', () => {
   const res = generate('sample-3-projects.csv', BLANK, { language: 'fr' });
+  const ss = world.sheets[res.sheetUrl.match(/d\/([^/]+)/)[1]];
+  const [items, settings] = ss.getSheets();
+  assert.strictEqual(ss.getName(), 'Invoices - sample-3-projects (editable)');
+  assert.strictEqual(items.getName(), 'Invoices');
+  assert.strictEqual(settings.getName(), 'Settings');
+  assert.strictEqual(ss.locale, 'en_US', 'no fr_CA locale');
+  assert.deepStrictEqual(plain(items.grid[0].slice(0, 4)), ['Invoice #', 'Client #', 'Invoice date', 'Payment due date']);
+  assert.strictEqual(items.grid[0][23], '(no label)');
+  assert.strictEqual(items.grid[0][24], '(no label)');
+  has(items.notes['0,0'] || '', 'One row per record');
+  assert.deepStrictEqual(plain(settings.grid[0].slice(1)), ['Setting', 'Value', 'Help']);
+  assert.strictEqual(settings.grid[1][1], 'Invoice language');
+  assert.strictEqual(settings.grid[1][2], 'fr', 'language setting still fr');
+  const all = JSON.stringify(items.grid) + JSON.stringify(settings.grid) + ss.getName();
+  ['Factures', 'Paramètres', 'Régénérer', 'sans étiquette', 'N° de facture', 'Dossier'].forEach(w => hasNot(all, w));
+  const dv = items.validations['1,22'];
+  assert.deepStrictEqual(plain(dv.list), ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'], 'French tax dropdown kept');
+  const pdf = pdfHtml(res)[0];
+  has(pdf, 'N° de facture'); has(pdf, 'Sous-total'); has(pdf, 'PRIVÉ ET CONFIDENTIEL');
+  const names = folderOf(res).files().filter(f => !f.trashed).map(f => f.getName());
+  assert.ok(names.indexOf('INV-3001 - Maple Productions.pdf') !== -1, names.join(' | '));
+  hasNot(names.join('|'), 'Facture');
+});
+
+test('Rebuild reads numbers typed as text the English way, also for French jobs', () => {
+  const res = generate('sample-1-basic-en.csv', MAP, { language: 'fr', outputMode: 'combined' });
   const sh = world.sheets[res.sheetUrl.match(/d\/([^/]+)/)[1]].getSheets()[0];
-  assert.strictEqual(sh.grid[0][23], '(sans étiquette)');
-  assert.strictEqual(sh.grid[0][24], '(sans étiquette)');
+  sh.grid[1][19] = '1,234';  // units typed as text
+  sh.grid[1][20] = '2.5';    // rate typed as text
+  gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
+  has(pdfHtml(res)[0], '1,234');
+  has(pdfHtml(res)[0], '$3,085.00', '1234 × 2.50');
+});
+
+test('names: root folder "Morph - Invoice PDFs", page title, email footer', () => {
+  const res = generate('sample-1-basic-en.csv');
+  const job = folderOf(res);
+  assert.strictEqual(job.parent.getName(), 'Morph - Invoice PDFs');
+  assert.strictEqual(gas.T.ROOT_FOLDER_NAME, 'Morph - Invoice PDFs');
+  has(world.emails[0].htmlBody, 'Sent by Morph - Invoice PDF Generator.');
+  const page = fs.readFileSync(path.join(__dirname, '..', 'Index.html'), 'utf8');
+  has(page, '<h1>Morph - Invoice PDF Generator</h1>');
+  has(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8'), ".setTitle('Morph - Invoice PDF Generator')");
+});
+
+test('file names: "<invoice #> - <client>.pdf"; ZIP named after the client only when there is one', () => {
+  const live = res => folderOf(res).files().filter(f => !f.trashed).map(f => f.getName()).sort();
+  // Sample 1: two invoices, two different clients.
+  const two = generate('sample-1-basic-en.csv');
+  const n2 = live(two);
+  assert.ok(n2.indexOf('All invoices.zip') !== -1, 'several clients → All invoices.zip: ' + n2.join(' | '));
+  assert.ok(n2.filter(n => /\.pdf$/.test(n)).every(n => /^[A-Z]+-\d+ - .+\.pdf$/.test(n)), n2.join(' | '));
+  hasNot(n2.join('|'), 'Invoice TAL');
+  // Combined with several invoices keeps the uploaded file's name.
+  const comb = generate('sample-1-basic-en.csv', MAP, { outputMode: 'combined' });
+  assert.ok(live(comb).indexOf('All invoices - sample-1-basic-en.pdf') !== -1, live(comb).join(' | '));
+  // Unit level: one client across invoices (any case/spacing), blank client names ignored, no client name.
+  const inv = (number, customerName) => ({ number, customerName });
+  assert.strictEqual(gas.zipName_([inv('A-1', 'Maple Productions'), inv('A-2', ' maple   productions '), inv('A-3', '')]),
+    'All invoices - Maple Productions.zip');
+  assert.strictEqual(gas.zipName_([inv('A-1', 'Maple'), inv('A-2', 'Birch')]), 'All invoices.zip');
+  assert.strictEqual(gas.zipName_([inv('A-1', ''), inv('A-2', '')]), 'All invoices.zip');
+  assert.strictEqual(gas.pdfBaseName_(inv('INV/7', 'Maple: West')), 'INV-7 - Maple- West');
+  assert.strictEqual(gas.pdfBaseName_(inv('INV-8', '')), 'INV-8');
+});
+
+console.log('Version 3.4 — JSDoc');
+
+test('every function has a JSDoc comment with matching @param and @return tags', () => {
+  const docs = require('../tools/build-docs');
+  const ts = docs.loadTypeScript();
+  if (!ts) { console.log('    (skipped: the typescript package is not installed)'); return; }
+  const data = docs.collect(ts);
+  const fns = data.entries.filter(e => e.kind === 'function');
+  assert.ok(fns.length > 150, 'found ' + fns.length + ' functions');
+  ['generateInvoices', 'parseUpload_', 'zipName_', 'sendRunMetrics_', 'fillLabels', 'cleanText_'].forEach(n =>
+    assert.ok(fns.some(f => f.name === n), n + ' found'));
+  assert.deepStrictEqual(docs.check(data.entries), [], 'documentation problems');
+  assert.ok(data.typedefs.some(t => t.name === 'Invoice') && data.typedefs.some(t => t.name === 'FormState'));
+  // The checker itself catches mistakes.
+  const fake = [
+    { kind: 'function', name: 'a', file: 'x', line: 1, params: ['p'], returns: true, doc: docs.parseDoc('/** Does a.\n * @param {string} q Wrong name. */') },
+    { kind: 'function', name: 'b', file: 'x', line: 2, params: [], returns: false, doc: null },
+  ];
+  const problems = docs.check(fake);
+  ['missing @param p', '@param q is not a parameter', 'no @return', 'b: no JSDoc comment'].forEach(m =>
+    assert.ok(problems.some(p => p.indexOf(m) !== -1), m + ' in ' + problems.join(' | ')));
+  const d = docs.parseDoc('/**\n * Sum.\n * @param {Array<{a: number}>} [list] Items.\n * @return {number} Total.\n * @example\n * sum([{a: 1}]) // 1\n */');
+  assert.deepStrictEqual(plain(d.tags.map(t => [t.tag, t.type, t.name, t.optional])),
+    [['param', 'Array<{a: number}>', 'list', true], ['return', 'number', '', false], ['example', '', '', false]]);
+  assert.strictEqual(d.tags[2].text, 'sum([{a: 1}]) // 1');
 });
 
 if (process.argv.includes('--html')) {

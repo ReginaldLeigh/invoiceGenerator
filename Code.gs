@@ -1,5 +1,5 @@
 /**
- * Invoice PDF Generator — Google Apps Script web app (version 3).
+ * @fileoverview Morph - Invoice PDF Generator — Google Apps Script web app (version 3), server code.
  *
  * Users upload a CSV or Excel export (single-line records from a database), tell
  * the app which column letter holds each field, choose English or French, and
@@ -22,26 +22,308 @@
  *    writes under a lock) and the root folder (created under a lock).
  */
 
-const ROOT_FOLDER_NAME = 'Invoice PDFs';
-const ROOT_FOLDER_KEY = 'rootFolderId';
+// ---------------------------------------------------------------------------
+// Shared data types (JSDoc)
+// ---------------------------------------------------------------------------
+
+/**
+ * An uploaded file as the page sends it.
+ * @typedef {Object} UploadFile
+ * @property {string} name File name, e.g. "export.csv" or "export.xlsx".
+ * @property {string} base64 The file's bytes, base64-encoded.
+ */
+
+/**
+ * One extra detail or the group heading, as the form sends it.
+ * @typedef {Object} ColumnLabel
+ * @property {string} col Column letter(s), e.g. "X". Blank = not used.
+ * @property {string} label Label printed before the value. Blank = print only the value.
+ */
+
+/**
+ * Column letters the user entered on the form, keyed by field (see {@link FIELDS}),
+ * plus the extra details and the grouping column.
+ * @typedef {Object} FormMapping
+ * @property {string} invoiceNumber Column letter of the invoice number (required).
+ * @property {ColumnLabel[]} details Up to 10 extra details.
+ * @property {ColumnLabel} groupBy The "Group line items by" column and heading label.
+ */
+
+/**
+ * Options from the form.
+ * @typedef {Object} FormOptions
+ * @property {boolean} hasHeader The first row is a header row (skipped).
+ * @property {boolean} combineEmployees One line per candidate / line type / rate, with a date range.
+ * @property {string} dateFormat "auto", "mdy" or "dmy": how dates in the file are written.
+ * @property {string} numberFormat "auto", "dot" (1,234.56) or "comma" (1 234,56).
+ * @property {string} language Invoice language: "en" or "fr".
+ * @property {string} outputMode "separate" (one PDF per invoice) or "combined" (one PDF).
+ */
+
+/**
+ * The whole form: what presets and last-used settings store.
+ * @typedef {Object} FormState
+ * @property {FormMapping} mapping Column letters, details and grouping.
+ * @property {FormOptions} options File and output options.
+ */
+
+/**
+ * Column letters converted to 0-based indexes and checked ({@link normalizeMapping_}).
+ * Each field key holds an index, or null when the field isn't mapped.
+ * @typedef {Object} Mapping
+ * @property {?number} invoiceNumber Column index of the invoice number.
+ * @property {Array<{index: number, label: string}>} details Extra-detail columns and their labels.
+ * @property {?{index: number, label: string}} groupBy Grouping column and heading label, or null.
+ */
+
+/**
+ * Cleaned options used while building invoices.
+ * @typedef {Object} Options
+ * @property {string} language "en" or "fr".
+ * @property {string} outputMode "separate" or "combined".
+ * @property {boolean} combineEmployees Combine matching rows into one line.
+ * @property {boolean} [hasHeader] Skip the first row.
+ * @property {string} [dateFormat] "auto", "mdy" or "dmy".
+ * @property {string} [numberFormat] "auto", "dot" or "comma".
+ * @property {boolean} [decimalComma] Numbers like "14,975" mean 14.975.
+ * @property {Object<string, number>} [taxRates] Rates in percent, keyed by {@link TAX_RATE_KEYS}.
+ */
+
+/**
+ * What the preview shows ({@link previewFile}).
+ * @typedef {Object} PreviewResult
+ * @property {string[]} columns Column letters shown, A up to ZZ.
+ * @property {string[][]} rows The first rows, cut to the shown columns.
+ * @property {string[]} header The whole first row, every column (used to fill in labels).
+ * @property {number} totalRows Rows in the file (hidden Excel rows left out).
+ * @property {number} totalColumns Columns in the widest row.
+ */
+
+/**
+ * One source row on an invoice, before lines are combined.
+ * @typedef {Object} Item
+ * @property {string} candidate Candidate name or role.
+ * @property {string} workOrder Work order.
+ * @property {string} purchaseOrder Purchase order.
+ * @property {string} workDate Work date as yyyy-mm-dd (or as written when it isn't a date).
+ * @property {string} lineType Line type, e.g. "Regular".
+ * @property {number} units Units (0 when blank or invalid).
+ * @property {number} unitPrice Rate (0 when blank or invalid).
+ * @property {(number|string)} unitsCell What goes in the spreadsheet's Units cell.
+ * @property {(number|string)} rateCell What goes in the spreadsheet's Rate cell.
+ * @property {number} amount units × rate, rounded to the cent.
+ * @property {string[]} details Extra-detail values, in the order of the labels.
+ * @property {string} group Group value (blank = no heading).
+ */
+
+/**
+ * One printed line on an invoice.
+ * @typedef {Object} Line
+ * @property {string} candidate Candidate name or role.
+ * @property {string} workOrder Work order.
+ * @property {string} purchaseOrder Purchase order.
+ * @property {string} lineType Line type.
+ * @property {string} group Group value.
+ * @property {number} quantity Units (summed when lines are combined).
+ * @property {number} unitPrice Rate.
+ * @property {number} amount quantity × rate, rounded to the cent.
+ * @property {string[]} dates Work dates (yyyy-mm-dd).
+ * @property {string[][]} details Distinct values of each extra detail.
+ */
+
+/**
+ * Lines under one group heading.
+ * @typedef {Object} Group
+ * @property {string} value Group value; blank for lines with no group (no heading).
+ * @property {Line[]} lines The lines, in order.
+ */
+
+/**
+ * A tax line printed under the subtotal.
+ * @typedef {Object} TaxLine
+ * @property {string} key Rate key (GST, PST, HST, NSHST, ONHST, PEI) or EXEMPT.
+ * @property {?number} ratePct Rate in percent; null for EXEMPT.
+ * @property {number} amount Tax amount, rounded to the cent.
+ */
+
+/**
+ * One invoice, built by {@link groupInvoices_}.
+ * @typedef {Object} Invoice
+ * @property {string} number Invoice number.
+ * @property {string} clientNumber Client number.
+ * @property {string} invoiceDate Invoice date (yyyy-mm-dd).
+ * @property {string} dueDate Payment due date (yyyy-mm-dd).
+ * @property {string} customerName Client name.
+ * @property {string} attention ATTN line.
+ * @property {?Object<string, string>} address Address parts keyed by {@link ADDRESS_KEYS}, or null.
+ * @property {string} taxCodeRaw The tax code as written in the data.
+ * @property {string} taxCode The recognised tax code (EXEMPT when blank or unknown).
+ * @property {Item[]} items Source rows.
+ * @property {Line[]} lines Printed lines.
+ * @property {Group[]} groups Lines under their headings.
+ * @property {string} groupLabel Group heading label (blank = value only).
+ * @property {string[]} detailLabels Extra-detail labels (blank = value only).
+ * @property {Array<{type: string, units: number}>} unitsSummary Units per line type.
+ * @property {number} subtotal Sum of the line amounts.
+ * @property {TaxLine[]} taxes Tax lines.
+ * @property {number} tax Total tax.
+ * @property {number} total Subtotal + tax.
+ */
+
+/**
+ * The result of grouping rows into invoices.
+ * @typedef {Object} Grouped
+ * @property {Invoice[]} invoices Invoices in order of first appearance.
+ * @property {Array<{row: number, reason: string}>} skipped Rows that couldn't be invoiced.
+ * @property {string[]} notes Rows that were invoiced with an adjustment (e.g. a blank rate counted as 0).
+ * @property {string[]} detailLabels Extra-detail labels.
+ */
+
+/**
+ * One call from the page, used for logs, error emails and metrics.
+ * @typedef {Object} Run
+ * @property {string} id Run id (also the job id for Generate).
+ * @property {string} fn Name of the function the page called.
+ * @property {string} user Signed-in user's email ('' when unknown).
+ * @property {number} started Start time (ms since the epoch).
+ * @property {string} stage Last progress stage logged.
+ * @property {Object} context Extra details for error reports, e.g. the file name and size.
+ */
+
+/**
+ * Logo, company block, footer and accent colour for one invoice language ({@link loadBranding_}).
+ * @typedef {Object} Branding
+ * @property {string} logo PNG logo as a data URI ('' = no logo).
+ * @property {string} accent Accent colour, e.g. "#1f4e79".
+ * @property {{address: string[], phone: string, gov: string[]}} company Internal address, phone and government numbers.
+ * @property {{paymentTitle: string, bankAddress: string[], bankDetails: string[][], remittance: string, disclosure: string}} footer Invoice footer.
+ * @property {boolean} footerAtBottom Put the footer at the bottom of the last page.
+ * @property {string[]} warnings Problems to show the user (e.g. the logo couldn't be loaded).
+ */
+
+/**
+ * Job details stored on the editable spreadsheet's hidden "_meta" tab.
+ * @typedef {Object} SheetMeta
+ * @property {string} version Spreadsheet layout version ({@link SHEET_VERSION}).
+ * @property {string} jobId Job (run) id.
+ * @property {string} sourceName Uploaded file name.
+ * @property {string} folderId Job folder id.
+ * @property {string} originalId Id of the copy of the uploaded file.
+ * @property {(number|string)} itemsSheetId Sheet id of the Invoices tab.
+ * @property {(number|string)} settingsSheetId Sheet id of the Settings tab.
+ * @property {string} created When the job was made (ISO time).
+ * @property {string} lastBuilt When the PDFs were last built (ISO time).
+ * @property {(number|string)} busyUntil Rebuild lock expiry (ms), '' when free.
+ * @property {string} grouping "true" when the job groups line items.
+ * @property {Object<string, number>} taxRates The rates the job was made with.
+ * @property {{perInvoice: Object<string, string>, combinedId: string, zipId: string}} files Ids of the PDFs and ZIP.
+ */
+
+/**
+ * The PDFs written by {@link writePdfs_}.
+ * @typedef {Object} PdfOutput
+ * @property {Array<{number: string, customer: string, total: string, url: string}>} invoices One entry per invoice.
+ * @property {?string} zipUrl Link to the ZIP (separate PDFs, more than one).
+ * @property {?string} combinedUrl Link to the combined PDF, or to the only PDF.
+ */
+
+/**
+ * What {@link renderFromSpreadsheet_} produces.
+ * @typedef {Object} Built
+ * @property {PdfOutput} output The PDFs.
+ * @property {Array<{row: number, reason: string}>} skipped Rows not invoiced.
+ * @property {string[]} notes Adjustment notes.
+ * @property {string[]} warnings Problems to show (e.g. logo).
+ * @property {Options} opts Options read from the Settings tab.
+ * @property {Object} L Invoice wording for the language ({@link I18N}).
+ * @property {SheetMeta} meta The job's metadata.
+ * @property {GoogleAppsScript.Drive.Folder} folder The job folder.
+ */
+
+/**
+ * What the results page shows after Generate or Rebuild.
+ * @typedef {Object} JobResult
+ * @property {boolean} rebuilt True after a Rebuild.
+ * @property {string} jobId Job (run) id.
+ * @property {string} folderName Job folder name.
+ * @property {string} folderUrl Job folder link.
+ * @property {string} sheetUrl Editable spreadsheet link.
+ * @property {string} rebuildUrl Web app link that rebuilds this job ('' if not deployed).
+ * @property {?string} originalUrl Link to the copy of the uploaded file.
+ * @property {?string} zipUrl ZIP link.
+ * @property {?string} combinedUrl Combined (or only) PDF link.
+ * @property {Array<{number: string, customer: string, total: string, url: string}>} invoices One entry per invoice.
+ * @property {Array<{row: number, reason: string}>} skipped Rows not invoiced.
+ * @property {string[]} notes Adjustment notes.
+ * @property {?string} emailedTo Who the email went to, or null.
+ * @property {string[]} warnings Problems to show.
+ */
+
+/**
+ * What the Tax rates card shows.
+ * @typedef {Object} TaxState
+ * @property {Object<string, number>} rates Current rates in percent.
+ * @property {Object<string, number>} defaults Starting rates.
+ * @property {string} updated When the rates were last changed (ISO time, '' = never).
+ * @property {string} updatedBy Who changed them last.
+ * @property {boolean} isAdmin The signed-in user may edit the rates.
+ * @property {Array<{key: string, en: string, fr: string}>} rows Rate key with its English and French labels.
+ */
+
+/**
+ * A saved form preset.
+ * @typedef {Object} Preset
+ * @property {string} name Preset name.
+ * @property {FormMapping} mapping Column letters, details and grouping.
+ * @property {FormOptions} options Options.
+ * @property {Object<string, string>} headers Header text expected in each mapped column, e.g. {A: "Invoice #"}.
+ * @property {string} updated When it was saved (ISO time).
+ */
+
+/**
+ * The user's presets as the preset menu lists them.
+ * @typedef {Object} PresetList
+ * @property {Array<{name: string, updated: string, isDefault: boolean}>} presets Presets sorted by name.
+ * @property {string} defaultName Name of the default preset ('' = none).
+ */
+
+/** @const {string} Name of the user's root Drive folder; each job gets a folder inside it. */
+const ROOT_FOLDER_NAME = 'Morph - Invoice PDFs';
+/** @const {string} User-property key caching the root folder's id (new key with the Morph name, so earlier test folders aren't reused). */
+const ROOT_FOLDER_KEY = 'morphRootFolderId';
+/** @const {number} Rows shown in the file preview. */
 const MAX_PREVIEW_ROWS = 6;
-const MAX_PREVIEW_COLS = 702; // the preview shows columns A–ZZ (a safety cap; later columns can still be mapped by letter)
+/** @const {number} Columns shown in the preview: A–ZZ, a safety cap (later columns can still be mapped by letter). */
+const MAX_PREVIEW_COLS = 702;
+/** @const {number} Invoices listed one by one in the email; the rest are counted. */
 const MAX_EMAIL_LINKS = 50;
+/** @const {string} Name of the hidden tab holding a job's details. */
 const META_SHEET = '_meta';
-const REBUILD_TIMEOUT_MS = 7 * 60 * 1000; // a run can't last longer than 6 minutes
+/** @const {number} How long a rebuild claim lasts (ms); a run can't last longer than 6 minutes. */
+const REBUILD_TIMEOUT_MS = 7 * 60 * 1000;
+/** @const {number} Most extra details per job. */
 const MAX_DETAILS = 10;
+/** @const {number} Most presets per user. */
 const MAX_PRESETS = 30;
+/** @const {number} Longest preset name (characters). */
 const MAX_PRESET_NAME = 60;
-const MAX_PRESET_BYTES = 8500; // a UserProperties value can hold about 9 KB
+/** @const {number} Largest preset (bytes); a UserProperties value can hold about 9 KB. */
+const MAX_PRESET_BYTES = 8500;
+/** @const {number} Largest logo file (bytes). */
 const MAX_LOGO_BYTES = 2 * 1024 * 1024;
+/** @const {string} Accent colour when Config.gs doesn't set a valid one. */
 const DEFAULT_ACCENT = '#1f4e79';
+/** @const {string} Prefix of the copy of the uploaded file in the job folder. */
 const ORIGINAL_PREFIX = 'Original data - ';
 
 // ---------------------------------------------------------------------------
 // Form fields and the editable sheet layout
 // ---------------------------------------------------------------------------
 
-/** Fields the user maps to column letters, shown in groups on the form. */
+/**
+ * Fields the user maps to column letters, shown in groups on the form.
+ * @const {Array<{key: string, group: string, label: string, required: (boolean|undefined), hint: (string|undefined)}>}
+ */
 const FIELDS = [
   { key: 'invoiceNumber', group: 'Invoice', label: 'Invoice number', required: true, hint: 'Rows sharing a number form one invoice' },
   { key: 'clientNumber',  group: 'Invoice', label: 'Client number' },
@@ -67,39 +349,48 @@ const FIELDS = [
   { key: 'taxCode',       group: 'Other',   label: 'Tax code', hint: 'Blank or unknown = EXEMPT' },
 ];
 
-/** Invoice-level fields (besides the address) taken from the first row of each invoice that has them. */
+/** @const {string[]} Invoice-level fields (besides the address) taken from the first row of each invoice that has them. */
 const INVOICE_FIELDS = ['clientNumber', 'invoiceDate', 'dueDate', 'customerName', 'attention'];
-/** Address parts, always taken together from one row. */
+/** @const {string[]} Address parts, always taken together from one row. */
 const ADDRESS_KEYS = ['address1', 'address2', 'address3', 'address4', 'city', 'province', 'postalCode', 'country'];
 
-/** Editable sheet, version 3: column (0-based) of each field on the Invoices tab. */
+/** @const {string} Layout version of the editable spreadsheet; Rebuild only accepts this version. */
 const SHEET_VERSION = '3';
+/** @const {Object<string, number>} Column (0-based) of each field on the editable sheet's Invoices tab. */
 const SHEET_MAP = {
   invoiceNumber: 0, clientNumber: 1, invoiceDate: 2, dueDate: 3, customerName: 4, attention: 5,
   address1: 6, address2: 7, address3: 8, address4: 9, city: 10, province: 11, postalCode: 12, country: 13,
   candidate: 14, workOrder: 15, purchaseOrder: 16, workDate: 17, lineType: 18, units: 19, unitPrice: 20,
   taxCode: 22,
 };
-const SHEET_AMOUNT_COL = 21;   // V
-const SHEET_GROUP_COL = 23;    // X
-const SHEET_DETAIL_START = 24; // Y
-const SHEET_BASE_WIDTH = 24;   // A–X, before the extra details
+/** @const {number} Amount column (V), calculated by a formula. */
+const SHEET_AMOUNT_COL = 21;
+/** @const {number} Group column (X); its header is the group heading label. */
+const SHEET_GROUP_COL = 23;
+/** @const {number} First extra-detail column (Y); details run to AH. */
+const SHEET_DETAIL_START = 24;
+/** @const {number} Columns A–X, before the extra details. */
+const SHEET_BASE_WIDTH = 24;
 
-/** Rows of the editable "Settings" tab, in order. */
+/** @const {string[]} Rows of the editable "Settings" tab, in order. */
 const SETTING_KEYS = ['language', 'outputMode', 'combineEmployees'];
 
 // ---------------------------------------------------------------------------
 // Taxes
 // ---------------------------------------------------------------------------
 
-/** The editable rates (percent), stored once and shared by all users. QST = GST + PST. */
+/** @const {string[]} The editable rates (percent), stored once and shared by all users. QST = GST + PST. */
 const TAX_RATE_KEYS = ['GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'PST'];
+/** @const {Object<string, number>} Starting rates in percent. */
 const DEFAULT_TAX_RATES = { GST: 5, HST: 15, NSHST: 14, ONHST: 13, PEI: 15, PST: 9.975 };
+/** @const {string} Script-property key of the shared rates. */
 const TAX_RATES_PROP = 'taxRates';
 
 /**
  * Tax codes accepted in the data. `parts` are the tax lines printed under the
- * subtotal (each one a key of the rates above). PST is a rate, not a code.
+ * subtotal (each one a key of the rates above); `aliases` are the English and
+ * French spellings accepted. PST is a rate, not a code.
+ * @const {Object<string, {parts: string[], aliases: string[]}>}
  */
 const TAX_CODES = {
   EXEMPT: { parts: [], aliases: ['EXEMPT'] },
@@ -110,6 +401,7 @@ const TAX_CODES = {
   PEI:    { parts: ['PEI'], aliases: ['PEI', 'IPE'] },
   QST:    { parts: ['GST', 'PST'], aliases: ['QST'] },
 };
+/** @const {string[]} Order in which tax codes are matched and listed. */
 const TAX_CODE_ORDER = ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'];
 
 // ---------------------------------------------------------------------------
@@ -119,6 +411,10 @@ const TAX_CODE_ORDER = ['EXEMPT', 'GST', 'HST', 'NSHST', 'ONHST', 'PEI', 'QST'];
 // Calibrated against Chrome's rendering of the samples (measured: plain line 17.4pt,
 // line with 2 details 37.7pt, column headings 19pt, group heading 17.5pt, condensed
 // header 54pt, footer ~96pt), plus a safety margin for Google's converter.
+/**
+ * Page layout estimates in points (Letter portrait), used to split invoices into pages.
+ * @const {Object<string, number>}
+ */
 const PAGE = {
   HEIGHT: 680,            // height of each page block (Letter is 792pt; the rest is margin)
   NUMBER_ROW: 16,         // "Page X of Y" row at the top
@@ -138,6 +434,12 @@ const PAGE = {
 // Wording
 // ---------------------------------------------------------------------------
 
+/**
+ * Invoice wording in English and French: headings, labels, columns, taxes, footer
+ * labels, "Page X of Y". The `en` entry also holds the email text and the editable
+ * spreadsheet text, which are English for every job.
+ * @const {{en: Object, fr: Object}}
+ */
 const I18N = {
   en: {
     locale: 'en',
@@ -158,8 +460,6 @@ const I18N = {
     unitsTotal: 'Total',
     continued: '(continued)',
     page: (n, of) => 'Page ' + n + ' of ' + of,
-    noLabel: '(no label)',
-    fileInvoice: 'Invoice',
     fileAll: 'All invoices',
     email: {
       subjectOne: 'Your invoice PDF is ready',
@@ -173,7 +473,7 @@ const I18N = {
       listTitle: 'Invoices',
       more: n => '…and ' + n + ' more in the Drive folder.',
       reference: 'Reference',
-      footer: 'Sent by Invoice PDF Generator.',
+      footer: 'Sent by Morph - Invoice PDF Generator.',
       editSheet: 'Edit in Google Sheets',
       rebuildHint: 'Need a small change? Edit the spreadsheet, then',
       rebuildLink: 'rebuild the PDF',
@@ -205,7 +505,8 @@ const I18N = {
       },
       rebuild: 'Rebuild PDF after editing',
       rebuildLabel: 'Rebuild PDF',
-      rebuildManual: 'Open the Invoice PDF Generator web app and paste this spreadsheet\'s link to rebuild the PDF.',
+      rebuildManual: 'Open the Morph - Invoice PDF Generator web app and paste this spreadsheet\'s link to rebuild the PDF.',
+      noLabel: '(no label)',
       folder: 'Drive folder',
       folderLabel: 'Open folder',
     },
@@ -229,38 +530,6 @@ const I18N = {
     unitsTotal: 'Total',
     continued: '(suite)',
     page: (n, of) => 'Page ' + n + ' de ' + of,
-    noLabel: '(sans étiquette)',
-    fileInvoice: 'Facture',
-    fileAll: 'Toutes les factures',
-    sheet: {
-      fileName: src => 'Factures - ' + src + ' (modifiable)',
-      itemsTab: 'Factures',
-      settingsTab: 'Paramètres',
-      headers: ['N° de facture', 'N° de client', 'Date de facturation', 'Paiement dû au plus tard', 'Client', 'ATTN',
-                'Adresse 1', 'Adresse 2', 'Adresse 3', 'Adresse 4', 'Ville', 'Province / État', 'Code postal', 'Pays',
-                'Candidat / Poste', 'Référence', 'Bon de commande', 'Date de travail', 'Type de ligne', 'Unités', 'Taux', 'Montant', 'Code de taxe'],
-      note: 'Une ligne par enregistrement. Les lignes ayant le même numéro de facture forment une seule facture.\n\n' +
-        'Les détails de la facture (n° de client, dates, client, ATTN, adresse, code de taxe) sont lus sur la PREMIÈRE ligne ' +
-        'de chaque facture qui les contient. L\'adresse (colonnes G à N) est toujours prise sur une seule ligne.\n\n' +
-        'Le montant est calculé automatiquement. Des unités ou un taux vides ou non numériques comptent pour 0. ' +
-        'Écrivez les dates au format aaaa-mm-jj.\n\n' +
-        'La colonne X regroupe les articles sous un titre : son en-tête sert d\'étiquette (laissez-le vide pour ne pas regrouper).\n\n' +
-        'Les colonnes Y à AH sont des détails supplémentaires imprimés sous chaque article. L\'en-tête sert d\'étiquette : ' +
-        'renommez-le pour changer l\'étiquette, ou tapez un en-tête dans une colonne vide (jusqu\'à AH) pour ajouter un détail.\n\n' +
-        'Un en-tête « (sans étiquette) » garde le groupe ou le détail, mais n\'imprime que sa valeur, sans étiquette.\n\n' +
-        'Après vos modifications, utilisez le lien « Régénérer le PDF » dans l\'onglet Paramètres.',
-      settingHeader: ['Paramètre', 'Valeur', 'Aide'],
-      settings: {
-        language: ['Langue de la facture', 'en = anglais, fr = français'],
-        outputMode: ['Sortie PDF', 'combined = un seul PDF avec toutes les factures; separate = un PDF par facture'],
-        combineEmployees: ['Regrouper par candidat', 'yes = une ligne par candidat avec la période; no = une ligne par rangée'],
-      },
-      rebuild: 'Régénérer le PDF après modification',
-      rebuildLabel: 'Régénérer le PDF',
-      rebuildManual: 'Ouvrez l\'application Web Invoice PDF Generator et collez le lien de cette feuille pour régénérer le PDF.',
-      folder: 'Dossier Drive',
-      folderLabel: 'Ouvrir le dossier',
-    },
   },
 };
 
@@ -268,19 +537,27 @@ const I18N = {
 // Web app entry points
 // ---------------------------------------------------------------------------
 
-/** Serves the form. "?rebuild=<spreadsheetId>" opens the page in rebuild mode. */
+/**
+ * Serves the web form. Called by Apps Script when someone opens the web app.
+ * A `?rebuild=<spreadsheetId>` parameter opens the page in rebuild mode.
+ * @param {GoogleAppsScript.Events.DoGet} e The request; `e.parameter.rebuild` is an optional spreadsheet id.
+ * @return {GoogleAppsScript.HTML.HtmlOutput} The page.
+ */
 function doGet(e) {
   const t = HtmlService.createTemplateFromFile('Index');
   const id = String((e && e.parameter && e.parameter.rebuild) || '');
   t.rebuildId = /^[A-Za-z0-9_-]{20,100}$/.test(id) ? id : '';
   return t.evaluate()
-    .setTitle('Invoice PDF Generator')
+    .setTitle('Morph - Invoice PDF Generator')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 /**
- * Called on page load: field definitions, the user's email, last-used settings,
- * presets (and the full default preset, which fills in the form), tax rates.
+ * Everything the page needs when it opens: the field list, the user's email,
+ * last-used settings, presets (and the full default preset), and the tax rates.
+ * Called by the page with google.script.run. Logs a "page_open" line.
+ * @return {{fields: Object[], userEmail: string, saved: ?FormState, presets: Object[], defaultName: string, defaultPreset: ?Preset, tax: TaxState, taxCodes: {en: string[], fr: string[]}}} The page set-up.
+ * @throws {Error} Any unexpected error, with a reference the user can quote.
  */
 function getConfig() {
   const run = newRun_('getConfig');
@@ -306,7 +583,14 @@ function getConfig() {
   }
 }
 
-/** Returns the first rows of the uploaded file (hidden Excel rows left out) so users can pick columns. */
+/**
+ * Reads an uploaded file for the preview: the first rows of every column up to ZZ,
+ * plus the whole header row so labels can be filled in for any column.
+ * Rows hidden in Excel are left out. Called by the page.
+ * @param {UploadFile} file The uploaded file.
+ * @return {PreviewResult} What the preview shows.
+ * @throws {Error} When the file can't be read or isn't a CSV or Excel file.
+ */
 function previewFile(file) {
   return withRun_('previewFile', run => {
     run.context.file = fileInfo_(file);
@@ -329,10 +613,17 @@ function previewFile(file) {
 }
 
 /**
- * Main action. request = { file: { name, base64 }, mapping: { invoiceNumber: 'A', ..., details, groupBy },
- *   options: { hasHeader, dateFormat, numberFormat, language, outputMode, combineEmployees } }
- * The files and the email always go to the signed-in user; any recipient in the request is ignored.
+ * Main action: builds the invoices from an upload. Creates the job folder, saves the
+ * original file, writes the editable spreadsheet, builds the PDFs from it, emails the
+ * links to the signed-in user and records the run metrics. Called by the page.
+ * Files and the email always go to the signed-in user; any recipient in the request is ignored.
  * The run id is also the job id (folder name, results page, email, logs).
+ * @param {Object} request What the form sends.
+ * @param {UploadFile} request.file The uploaded file.
+ * @param {FormMapping} request.mapping Column letters, extra details and grouping.
+ * @param {FormOptions} request.options File and output options.
+ * @return {JobResult} What the results page shows.
+ * @throws {Error} A user message (e.g. a missing column letter), or an unexpected error with a reference.
  */
 function generateInvoices(request) {
   return withRun_('generateInvoices', run => {
@@ -380,8 +671,14 @@ function generateInvoices(request) {
 }
 
 /**
- * Validates the request and reads the uploaded file into invoices.
- * Returns { mapping, opts, grouped, notes }. No Drive files are created here.
+ * Validates the request and reads the uploaded file into invoices. Creates no Drive files.
+ * Labels are used exactly as typed: a blank label stays blank, so the invoice prints only the value.
+ * @private
+ * @param {{file: UploadFile, mapping: FormMapping, options: FormOptions}} request What the form sends.
+ * @param {string} jobId Job id (names the temporary file used to read Excel files).
+ * @param {Run} [run] The run, for progress logs.
+ * @return {{mapping: Mapping, opts: Options, grouped: Grouped, notes: string[]}} The parsed upload.
+ * @throws {Error} A user message when nothing can be invoiced or the mapping is invalid.
  */
 function parseUpload_(request, jobId, run) {
   const mapping = normalizeMapping_(request.mapping || {});
@@ -409,9 +706,13 @@ function parseUpload_(request, jobId, run) {
 
 /**
  * Rebuilds the PDFs from an edited invoice spreadsheet, without re-uploading.
- * request = { sheet: spreadsheet URL or ID, notify: true to email the updated links }
- * Existing PDFs are overwritten in place, so links that were already shared keep working.
- * Rebuilds don't produce run metrics.
+ * Existing PDFs are overwritten in place, so links that were already shared keep
+ * working. Rebuilds don't produce run metrics. Called by the page.
+ * @param {Object} request What the rebuild card sends.
+ * @param {string} request.sheet The spreadsheet's link or id.
+ * @param {boolean} [request.notify] Email the updated links to the signed-in user.
+ * @return {JobResult} What the results page shows.
+ * @throws {Error} When the spreadsheet can't be opened, wasn't made by this app, or is already being rebuilt.
  */
 function rebuildFromSpreadsheet(request) {
   return withRun_('rebuildFromSpreadsheet', run => {
@@ -425,9 +726,9 @@ function rebuildFromSpreadsheet(request) {
       throw userError_('Could not open that spreadsheet. Check the link, and make sure you have edit access to it.');
     }
     const meta = readMeta_(ss);
-    if (!meta) throw userError_('That spreadsheet was not created by Invoice PDF Generator, so it cannot be rebuilt.');
+    if (!meta) throw userError_('That spreadsheet was not created by Morph - Invoice PDF Generator, so it cannot be rebuilt.');
     if (String(meta.version) !== SHEET_VERSION) {
-      throw userError_('This spreadsheet was made with an older version of Invoice PDF Generator, so it can\'t be rebuilt. ' +
+      throw userError_('This spreadsheet was made with an older version of Morph - Invoice PDF Generator, so it can\'t be rebuilt. ' +
         'Generate it again from the original file.');
     }
     log_(run, 'opened', { spreadsheetId: id, jobId: meta.jobId });
@@ -458,6 +759,18 @@ function rebuildFromSpreadsheet(request) {
   });
 }
 
+/**
+ * Builds the results-page data for a finished Generate or Rebuild.
+ * @private
+ * @param {Built} built The rendered job.
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @param {Array<{row: number, reason: string}>} skipped Rows not invoiced.
+ * @param {string[]} notes Adjustment notes.
+ * @param {?string} emailedTo Who the email went to, or null.
+ * @param {string[]} warnings Problems to show.
+ * @param {boolean} rebuilt True after a Rebuild.
+ * @return {JobResult} What the results page shows.
+ */
 function jobResponse_(built, ss, skipped, notes, emailedTo, warnings, rebuilt) {
   let originalUrl = null;
   if (built.meta.originalId) {
@@ -481,7 +794,13 @@ function jobResponse_(built, ss, skipped, notes, emailedTo, warnings, rebuilt) {
   };
 }
 
-/** Saves the uploaded file, byte for byte, in the job folder. */
+/**
+ * Saves the uploaded file, byte for byte, in the job folder as "Original data - <name>".
+ * @private
+ * @param {GoogleAppsScript.Drive.Folder} folder The job folder.
+ * @param {UploadFile} file The uploaded file.
+ * @return {GoogleAppsScript.Drive.File} The saved copy.
+ */
 function saveOriginal_(folder, file) {
   const name = String(file.name || 'upload');
   const lower = name.toLowerCase();
@@ -500,12 +819,22 @@ function saveOriginal_(folder, file) {
 // one property per preset, so they are private to each user.
 // One preset can be the default: it fills in the form when the page opens.
 
-/** Returns { presets: [{ name, updated, isDefault }], defaultName }. */
+/**
+ * The user's presets and the default preset's name.
+ * @private
+ * @return {PresetList} The preset list.
+ */
 function listPresetsImpl_() {
   return presetState_(PropertiesService.getUserProperties());
 }
 
-/** Returns one preset { name, mapping, options, headers, updated }, or throws if it doesn't exist. */
+/**
+ * Reads one preset, upgraded to the current form layout.
+ * @private
+ * @param {string} name Preset name (any capitalisation).
+ * @return {Preset} The preset.
+ * @throws {Error} When the preset doesn't exist.
+ */
 function getPresetImpl_(name) {
   const preset = readPreset_(PropertiesService.getUserProperties(), name);
   if (!preset) throw userError_('The preset "' + String(name || '') + '" no longer exists.');
@@ -515,7 +844,16 @@ function getPresetImpl_(name) {
 
 /**
  * Saves the form as a preset. Saving under an existing name (any capitalisation)
- * replaces that preset. request = { name, mapping, options, headers, makeDefault }
+ * replaces that preset. Without a file loaded, an update keeps the headers the preset remembered.
+ * @private
+ * @param {Object} request What the page sends.
+ * @param {string} request.name Preset name (up to 60 characters).
+ * @param {FormMapping} request.mapping Column letters, details and grouping.
+ * @param {FormOptions} request.options Options.
+ * @param {Object<string, string>} [request.headers] Header text of each mapped column in the loaded file.
+ * @param {boolean} [request.makeDefault] Also make it the default preset.
+ * @return {PresetList} The updated list, plus `saved` (the preset) and `replaced` (true if it existed).
+ * @throws {Error} When the name is blank or too long, the user has 30 presets, or the preset is too large.
  */
 function savePresetImpl_(request) {
   request = request || {};
@@ -544,7 +882,12 @@ function savePresetImpl_(request) {
   return Object.assign(presetState_(props), { saved: preset, replaced: !!existing });
 }
 
-/** Deletes a preset (and clears the default if it was the default). */
+/**
+ * Deletes a preset, and clears the default if it was the default.
+ * @private
+ * @param {string} name Preset name.
+ * @return {PresetList} The updated list.
+ */
 function deletePresetImpl_(name) {
   const props = PropertiesService.getUserProperties();
   const key = presetKey_(cleanPresetName_(name));
@@ -553,7 +896,13 @@ function deletePresetImpl_(name) {
   return presetState_(props);
 }
 
-/** Makes a preset the default (fills in the form on page load). An empty name clears the default. */
+/**
+ * Makes a preset the default (it fills in the form when the page opens). A blank name clears the default.
+ * @private
+ * @param {string} name Preset name, or '' to clear.
+ * @return {PresetList} The updated list.
+ * @throws {Error} When the preset doesn't exist.
+ */
 function setDefaultPresetImpl_(name) {
   const props = PropertiesService.getUserProperties();
   if (!String(name || '').trim()) {
@@ -568,24 +917,91 @@ function setDefaultPresetImpl_(name) {
 
 // Functions the page calls (google.script.run). Each one is logged with its own run id;
 // unexpected errors are emailed to the developer (see withRun_).
+/**
+ * Lists the signed-in user's presets. Called by the page.
+ * @return {PresetList} The preset list.
+ */
 function listPresets() { return withRun_('listPresets', () => listPresetsImpl_()); }
+
+/**
+ * Reads one preset. Called by the page when a preset is chosen.
+ * @param {string} name Preset name.
+ * @return {Preset} The preset.
+ * @throws {Error} When the preset doesn't exist.
+ */
 function getPreset(name) { return withRun_('getPreset', () => getPresetImpl_(name)); }
+
+/**
+ * Saves the form as a preset. Called by the page. See {@link savePresetImpl_}.
+ * @param {Object} request Name, mapping, options, headers and makeDefault.
+ * @return {PresetList} The updated list, with `saved` and `replaced`.
+ * @throws {Error} When the preset can't be saved.
+ */
 function savePreset(request) { return withRun_('savePreset', () => savePresetImpl_(request)); }
+
+/**
+ * Deletes a preset. Called by the page.
+ * @param {string} name Preset name.
+ * @return {PresetList} The updated list.
+ */
 function deletePreset(name) { return withRun_('deletePreset', () => deletePresetImpl_(name)); }
+
+/**
+ * Sets or clears the default preset. Called by the page.
+ * @param {string} name Preset name, or '' to clear.
+ * @return {PresetList} The updated list.
+ * @throws {Error} When the preset doesn't exist.
+ */
 function setDefaultPreset(name) { return withRun_('setDefaultPreset', () => setDefaultPresetImpl_(name)); }
+
+/**
+ * Saves new tax rates for everyone (admins only). Called by the page.
+ * @param {Object<string, string>} rates Percentages keyed by GST, HST, NSHST, ONHST, PEI, PST.
+ * @return {TaxState} The updated rates.
+ * @throws {Error} When the user isn't an admin or a rate is invalid.
+ */
 function saveTaxRates(rates) { return withRun_('saveTaxRates', () => saveTaxRatesImpl_(rates)); }
+
+/**
+ * Restores the starting tax rates (admins only). Called by the page.
+ * @return {TaxState} The updated rates.
+ * @throws {Error} When the user isn't an admin.
+ */
 function resetTaxRates() { return withRun_('resetTaxRates', () => resetTaxRatesImpl_()); }
 
+/**
+ * Property-key prefix of the signed-in user's presets.
+ * @private
+ * @return {string} e.g. "preset:user@example.com:".
+ */
 function presetPrefix_() {
   return 'preset:' + currentUserEmail_().toLowerCase() + ':';
 }
+/**
+ * Property key of one preset. Names match ignoring capitalisation.
+ * @private
+ * @param {string} name Preset name.
+ * @return {string} The property key.
+ */
 function presetKey_(name) {
   return presetPrefix_() + encodeURIComponent(String(name).trim().toLowerCase());
 }
+/**
+ * Property key that holds the default preset's key.
+ * @private
+ * @return {string} The property key.
+ */
 function presetDefaultKey_() {
   return 'presetDefault:' + currentUserEmail_().toLowerCase();
 }
 
+/**
+ * Trims a preset name and collapses its spaces.
+ * @private
+ * @param {*} name The name as typed.
+ * @return {string} The clean name.
+ * @throws {Error} When the name is blank or over 60 characters.
+ */
 function cleanPresetName_(name) {
   const s = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
   if (!s) throw userError_('Please give the preset a name.');
@@ -593,6 +1009,13 @@ function cleanPresetName_(name) {
   return s;
 }
 
+/**
+ * Reads one preset from user properties, upgraded to the current form layout.
+ * @private
+ * @param {GoogleAppsScript.Properties.Properties} props The user's properties.
+ * @param {string} name Preset name.
+ * @return {?Preset} The preset, or null if it doesn't exist or can't be read.
+ */
 function readPreset_(props, name) {
   let key;
   try { key = presetKey_(cleanPresetName_(name)); } catch (e) { return null; }
@@ -604,7 +1027,12 @@ function readPreset_(props, name) {
   } catch (e) { return null; }
 }
 
-/** All of the user's presets, sorted by name, plus the default preset's name. */
+/**
+ * All of the user's presets, sorted by name, plus the default preset's name.
+ * @private
+ * @param {GoogleAppsScript.Properties.Properties} props The user's properties.
+ * @return {PresetList} The preset list.
+ */
 function presetState_(props) {
   const all = props.getProperties();
   const prefix = presetPrefix_();
@@ -625,10 +1053,13 @@ function presetState_(props) {
 }
 
 /**
- * Keeps only the known form fields, with length limits, in the shape the page
- * sends to generateInvoices(). Used for presets and last-used settings. Values
- * saved by older versions are upgraded (e.g. Employee name → Candidate / Role);
- * removed fields (business details, currency, accent colour, recipient...) are dropped.
+ * Keeps only the known form fields, with length limits, in the shape the page sends
+ * to {@link generateInvoices}. Used for presets and last-used settings. Values saved by
+ * older versions are upgraded (e.g. Employee name → Candidate / Role); removed fields are dropped.
+ * @private
+ * @param {Object} rawMapping Column letters as stored or sent.
+ * @param {Object} rawOptions Options as stored or sent.
+ * @return {FormState} The clean form state.
  */
 function sanitizeFormState_(rawMapping, rawOptions) {
   const m = rawMapping || {}, o = rawOptions || {};
@@ -662,8 +1093,13 @@ function sanitizeFormState_(rawMapping, rawOptions) {
 }
 
 /**
- * The header text the preset expects in each mapped column, e.g. { A: 'Invoice #' }.
+ * The header text a preset expects in each mapped column, e.g. `{A: 'Invoice #'}`.
  * The page compares it with each new upload to catch a file in a different layout.
+ * Columns that aren't mapped are dropped.
+ * @private
+ * @param {Object<string, string>} raw Header text by column letter.
+ * @param {FormMapping} mapping The preset's column letters.
+ * @return {Object<string, string>} Header text of the mapped columns only.
  */
 function sanitizeHeaders_(raw, mapping) {
   const used = {};
@@ -685,7 +1121,11 @@ function sanitizeHeaders_(raw, mapping) {
 // Tax rates (shared by all users; only admins can change them)
 // ---------------------------------------------------------------------------
 
-/** Current rates (stored rates merged over the defaults), plus who changed them last. */
+/**
+ * Current tax rates: the stored rates merged over the defaults, plus who changed them last.
+ * @private
+ * @return {{rates: Object<string, number>, updated: string, updatedBy: string}} The rates.
+ */
 function getTaxRates_() {
   let stored = null;
   try { stored = JSON.parse(PropertiesService.getScriptProperties().getProperty(TAX_RATES_PROP) || 'null'); } catch (e) { stored = null; }
@@ -699,7 +1139,11 @@ function getTaxRates_() {
   return { rates: rates, updated: (stored && stored.updated) || '', updatedBy: (stored && stored.updatedBy) || '' };
 }
 
-/** What the Tax rates card shows. */
+/**
+ * What the Tax rates card shows.
+ * @private
+ * @return {TaxState} Rates, defaults, last change and whether the user is an admin.
+ */
 function taxState_() {
   const t = getTaxRates_();
   return {
@@ -712,7 +1156,11 @@ function taxState_() {
   };
 }
 
-/** Admin emails from Config.gs (CONFIG.TAX_ADMINS) plus the optional script property TAX_ADMINS. */
+/**
+ * Tax admin emails: CONFIG.TAX_ADMINS (Config.gs) plus the optional script property TAX_ADMINS.
+ * @private
+ * @return {string[]} Lower-case email addresses.
+ */
 function taxAdmins_() {
   const fromConfig = (cfg_().TAX_ADMINS || []).map(String);
   let fromProp = '';
@@ -721,16 +1169,32 @@ function taxAdmins_() {
     .map(s => s.trim().toLowerCase()).filter(s => s.indexOf('@') > 0);
 }
 
+/**
+ * Whether the signed-in user may change the tax rates.
+ * @private
+ * @return {boolean} True for a tax admin.
+ */
 function isTaxAdmin_() {
   const me = currentUserEmail_().toLowerCase();
   return !!me && taxAdmins_().indexOf(me) !== -1;
 }
 
+/**
+ * Stops unless the signed-in user is a tax admin.
+ * @private
+ * @throws {Error} When the user isn't a tax admin.
+ */
 function requireTaxAdmin_() {
   if (!isTaxAdmin_()) throw userError_('Tax rates can only be changed by an admin.');
 }
 
-/** Saves new rates (admins only). rates = { GST: '5', HST: '15', ... } as percentages. */
+/**
+ * Validates and saves new tax rates (admins only).
+ * @private
+ * @param {Object<string, string>} rates Percentages, e.g. {GST: '5', HST: '15'}: 0–100 with up to 3 decimals.
+ * @return {TaxState} The updated rates.
+ * @throws {Error} When the user isn't an admin or a rate is invalid.
+ */
 function saveTaxRatesImpl_(rates) {
   requireTaxAdmin_();
   const clean = {}, errors = [];
@@ -747,13 +1211,23 @@ function saveTaxRatesImpl_(rates) {
   return taxState_();
 }
 
-/** Restores the starting rates (admins only). */
+/**
+ * Restores the starting tax rates (admins only).
+ * @private
+ * @return {TaxState} The updated rates.
+ * @throws {Error} When the user isn't an admin.
+ */
 function resetTaxRatesImpl_() {
   requireTaxAdmin_();
   writeTaxRates_(Object.assign({}, DEFAULT_TAX_RATES));
   return taxState_();
 }
 
+/**
+ * Stores the shared tax rates with who changed them and when, under the script lock.
+ * @private
+ * @param {Object<string, number>} rates Rates in percent.
+ */
 function writeTaxRates_(rates) {
   const lock = LockService.getScriptLock();
   lock.waitLock(30000);
@@ -766,7 +1240,16 @@ function writeTaxRates_(rates) {
   }
 }
 
-/** Accepts English or French codes, any capitalisation, spaces/hyphens ignored. Returns the code key or null. */
+/**
+ * Recognises a tax code in English or French, any capitalisation, ignoring spaces and hyphens.
+ * @private
+ * @param {*} raw The tax code as written.
+ * @return {?string} The code key (EXEMPT, GST, HST, NSHST, ONHST, PEI or QST), or null.
+ * @example
+ * normalizeTaxCode_('tvh')    // 'HST'
+ * normalizeTaxCode_('ON-HST') // 'ONHST'
+ * normalizeTaxCode_('HTS')    // null
+ */
 function normalizeTaxCode_(raw) {
   const s = String(raw == null ? '' : raw).toUpperCase().replace(/[\s\-_.]/g, '');
   if (!s) return null;
@@ -776,7 +1259,14 @@ function normalizeTaxCode_(raw) {
   return null;
 }
 
-/** Tax lines for an invoice: [{ key, ratePct, amount }]. EXEMPT gives one $0.00 line. */
+/**
+ * Tax lines for an invoice. QST gives two lines (GST and PST); EXEMPT gives one $0.00 line.
+ * @private
+ * @param {string} code Recognised tax code.
+ * @param {number} subtotal Invoice subtotal.
+ * @param {Object<string, number>} rates Rates in percent.
+ * @return {TaxLine[]} The tax lines.
+ */
 function computeTaxes_(code, subtotal, rates) {
   const def = TAX_CODES[code] || TAX_CODES.EXEMPT;
   if (!def.parts.length) return [{ key: 'EXEMPT', ratePct: null, amount: 0 }];
@@ -791,14 +1281,32 @@ function computeTaxes_(code, subtotal, rates) {
 // lines (Apps Script → Executions / Cloud Logging): who, when, which function,
 // and progress stages. Nothing is shared between runs, so users never interfere.
 
+/** @const {string} App tag on every log line (an internal id for filtering logs). */
 const APP_NAME = 'invoice-pdf-generator';
-const DEV_EMAIL_REPEAT_SECONDS = 600; // the same error from the same user is emailed at most every 10 minutes
+/** @const {number} The same error from the same user is emailed at most every 10 minutes. */
+const DEV_EMAIL_REPEAT_SECONDS = 600;
 
+/**
+ * Starts a run: a new id, the function name, the signed-in user and the start time.
+ * @private
+ * @param {string} fnName Name of the function the page called.
+ * @param {string} [runId] Id to use instead of a new one.
+ * @return {Run} The run.
+ */
 function newRun_(fnName, runId) {
   return { id: runId || newJobId_(), fn: fnName, user: currentUserEmail_(), started: Date.now(), stage: 'start', context: {} };
 }
 
-/** One structured log line: { app, runId, user, timestamp, function, stage, ...data }. */
+/**
+ * Writes one structured JSON log line (Apps Script → Executions / Cloud Logging):
+ * `{app, runId, user, timestamp, function, stage, ...data}`. Logging never breaks a run.
+ * @private
+ * @param {Run} run The run.
+ * @param {string} stage Progress stage, e.g. "file_read" or "pdfs_written".
+ * @param {Object} [data] Extra fields for the line.
+ * @param {string} [level] "warn" or "error"; anything else logs as info.
+ * @return {Object} The logged entry.
+ */
 function log_(run, stage, data, level) {
   if (stage !== 'error' && stage !== 'user_error') run.stage = stage;
   const entry = Object.assign({
@@ -813,14 +1321,29 @@ function log_(run, stage, data, level) {
   return entry;
 }
 
-/** An error caused by the user's input or permissions: shown to them, logged, not emailed to the developer. */
+/**
+ * An error caused by the user's input or permissions. It's shown to the user and
+ * logged as a warning, but not emailed to the developer.
+ * @private
+ * @param {string} message What the user sees.
+ * @return {Error} The error, marked `userFacing`.
+ */
 function userError_(message) {
   const e = new Error(message);
   e.userFacing = true;
   return e;
 }
 
-/** Runs fn(run) with start/done logs; logs every error and emails unexpected ones to DEV_EMAIL. */
+/**
+ * Runs a page call with "start" and "done" logs. User errors are logged and passed
+ * on; unexpected errors are logged with the stack, emailed to DEV_EMAIL and replaced
+ * by a message with a reference.
+ * @private
+ * @param {string} fnName Name of the function the page called.
+ * @param {function(Run): *} fn The work to do.
+ * @return {*} Whatever `fn` returns.
+ * @throws {Error} The user error, or a message with the run's reference.
+ */
 function withRun_(fnName, fn) {
   const run = newRun_(fnName);
   log_(run, 'start');
@@ -833,6 +1356,14 @@ function withRun_(fnName, fn) {
   }
 }
 
+/**
+ * Logs an error and re-throws it in the form the page shows. Unexpected errors are
+ * emailed to the developer and replaced by "Something went wrong (reference …)".
+ * @private
+ * @param {Run} run The run.
+ * @param {Error} e The error.
+ * @throws {Error} Always.
+ */
 function handleRunError_(run, e) {
   const message = (e && e.message) || String(e);
   if (e && e.userFacing) {
@@ -845,12 +1376,24 @@ function handleRunError_(run, e) {
   throw new Error('Something went wrong (reference ' + run.id + '). The developer has been notified. Details: ' + message);
 }
 
+/**
+ * File name and approximate size for logs (never the contents).
+ * @private
+ * @param {?UploadFile} file The uploaded file.
+ * @return {?{name: string, sizeBytes: number}} Name and size, or null.
+ */
 function fileInfo_(file) {
   if (!file) return null;
   return { name: String(file.name || ''), sizeBytes: Math.floor(String(file.base64 || '').length * 3 / 4) };
 }
 
-/** Emails an unexpected error to DEV_EMAIL (English, from the user's account), at most once per 10 minutes per error. */
+/**
+ * Emails an unexpected error to CONFIG.DEV_EMAIL (in English, from the user's account),
+ * at most once per 10 minutes for the same error from the same user. Failures are only logged.
+ * @private
+ * @param {Run} run The run.
+ * @param {Error} e The error.
+ */
 function sendDevErrorEmail_(run, e) {
   const to = cleanText_(cfg_().DEV_EMAIL);
   if (!to) return;
@@ -864,7 +1407,7 @@ function sendDevErrorEmail_(run, e) {
     }
     const f = run.context.file;
     const body = [
-      'An unexpected error happened in Invoice PDF Generator.',
+      'An unexpected error happened in Morph - Invoice PDF Generator.',
       '',
       'Run id:        ' + run.id,
       'User:          ' + (run.user || '(unknown)'),
@@ -881,7 +1424,7 @@ function sendDevErrorEmail_(run, e) {
     ].join('\n');
     MailApp.sendEmail({
       to: to,
-      subject: '[Invoice PDF Generator] Error in ' + run.fn + ' (run ' + run.id + ')',
+      subject: '[Morph - Invoice PDF Generator] Error in ' + run.fn + ' (run ' + run.id + ')',
       body: body,
       name: senderName_(),
     });
@@ -893,9 +1436,12 @@ function sendDevErrorEmail_(run, e) {
 }
 
 /**
- * Run metrics for BigQuery: one row per client per Generate run,
- * [runId, user, clientId, invoiceCount, runTimeMs]. No timestamp (the
- * developer's library adds it). Logged, then handed to sendRunMetrics_ (Config.gs).
+ * Run metrics for BigQuery: one row per client per Generate run. No timestamp
+ * (the developer's library adds it).
+ * @private
+ * @param {Run} run The run.
+ * @param {Invoice[]} invoices The invoices made.
+ * @return {Array<Array<(string|number)>>} Rows of [runId, user, clientId, invoiceCount, runTimeMs].
  */
 function buildRunMetrics_(run, invoices) {
   const runTimeMs = Math.round(Date.now() - run.started);
@@ -908,6 +1454,13 @@ function buildRunMetrics_(run, invoices) {
   return order.map(id => [run.id, run.user, id, counts[id], runTimeMs]);
 }
 
+/**
+ * Logs the run metrics and hands them to sendRunMetrics_ (Config.gs). Never fails the run.
+ * @private
+ * @param {Run} run The run.
+ * @param {Invoice[]} invoices The invoices made.
+ * @return {Array<Array<(string|number)>>} The rows sent ([] on failure).
+ */
 function recordRunMetrics_(run, invoices) {
   try {
     const rows = buildRunMetrics_(run, invoices);
@@ -920,11 +1473,21 @@ function recordRunMetrics_(run, invoices) {
   }
 }
 
+/**
+ * Sender name for emails (CONFIG.EMAIL_SENDER_NAME).
+ * @private
+ * @return {string} e.g. "Morph - Invoice PDF Generator (no reply)".
+ */
 function senderName_() {
-  return cleanText_(cfg_().EMAIL_SENDER_NAME) || 'Invoice PDF Generator (no reply)';
+  return cleanText_(cfg_().EMAIL_SENDER_NAME) || 'Morph - Invoice PDF Generator (no reply)';
 }
 
-/** Small, stable string hash for cache keys. */
+/**
+ * Small, stable string hash for cache keys.
+ * @private
+ * @param {string} s Any text.
+ * @return {string} A short base-36 hash.
+ */
 function hash_(s) {
   let h = 5381;
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0;
@@ -932,19 +1495,35 @@ function hash_(s) {
 }
 
 // ---------------------------------------------------------------------------
-// Developer settings (Config.gs): logo, company block, footer, accent colour
+// Branding from Config.gs: logo, company block, footer, accent colour
 // ---------------------------------------------------------------------------
 
+/**
+ * The developer settings from Config.gs.
+ * @private
+ * @return {Object} CONFIG, or {} when it's missing.
+ */
 function cfg_() {
   return typeof CONFIG !== 'undefined' && CONFIG ? CONFIG : {};
 }
 
+/**
+ * The accent colour from Config.gs, or the default dark blue.
+ * @private
+ * @return {string} A "#rrggbb" colour.
+ */
 function accent_() {
   const c = String(cfg_().ACCENT_COLOR || '').trim();
   return /^#[0-9a-f]{6}$/i.test(c) ? c : DEFAULT_ACCENT;
 }
 
-/** The accent colour mixed with white, for group heading backgrounds. */
+/**
+ * Mixes a colour with white, e.g. for group heading backgrounds.
+ * @private
+ * @param {string} hex A "#rrggbb" colour.
+ * @param {number} amount How much white, 0 (none) to 1 (white).
+ * @return {string} The tinted "#rrggbb" colour.
+ */
 function tint_(hex, amount) {
   const n = parseInt(hex.slice(1), 16);
   const mix = c => Math.round(c + (255 - c) * amount);
@@ -952,16 +1531,36 @@ function tint_(hex, amount) {
   return '#' + [r, g, b].map(v => ('0' + v.toString(16)).slice(-2)).join('');
 }
 
+/**
+ * Text with surrounding spaces removed; null and undefined become ''.
+ * @private
+ * @param {*} v Any value.
+ * @return {string} The trimmed text.
+ */
 const cleanText_ = v => String(v == null ? '' : v).trim();
+/**
+ * Trimmed, non-blank strings from an array.
+ * @private
+ * @param {*} a An array (anything else gives []).
+ * @return {string[]} The clean list.
+ */
 const cleanList_ = a => (Array.isArray(a) ? a : []).map(cleanText_).filter(Boolean);
-/** A French value, or the English one when the French one is blank. */
+/**
+ * A French value, or the English one when the French one is blank.
+ * @private
+ * @param {*} fr French text.
+ * @param {*} en English text.
+ * @return {string} The text to use.
+ */
 const pickText_ = (fr, en) => cleanText_(fr) || cleanText_(en);
 
 /**
- * Logo, company block, footer and accent colour for one invoice language.
- * The company and bank details are the same in both languages; only the labels
- * (and the two footer sentences) follow the language.
- * Returns { logo, company: { address, phone, gov }, footer, accent, warnings }.
+ * Logo, company block, footer and accent colour for one invoice language. The company
+ * and bank details are the same in both languages; only the labels (and the two
+ * footer sentences) follow the language.
+ * @private
+ * @param {string} lang "en" or "fr".
+ * @return {Branding} The branding.
  */
 function loadBranding_(lang) {
   const c = cfg_();
@@ -996,7 +1595,12 @@ function loadBranding_(lang) {
   };
 }
 
-/** Reads the PNG logo from Drive once and returns it as a data URI (or a warning). */
+/**
+ * Reads the PNG logo (CONFIG.LOGO_DRIVE_FILE_ID) from Drive as a data URI.
+ * A missing, non-PNG, too-large (over 2 MB) or unreadable logo gives a warning instead.
+ * @private
+ * @return {{dataUri: string, warning: string}} The logo, or '' and a warning.
+ */
 function loadLogo_() {
   const id = cleanText_(cfg_().LOGO_DRIVE_FILE_ID);
   if (!id) return { dataUri: '', warning: '' };
@@ -1020,25 +1624,32 @@ function loadLogo_() {
 // ---------------------------------------------------------------------------
 
 /**
- * Creates the editable Google Sheet (Invoices + Settings tabs) inside the job folder.
- * The Invoices tab keeps one row per source record; invoice-level details are
- * written on each invoice's first row only, so one cell fixes the whole invoice.
+ * Creates the editable Google Sheet (Invoices + Settings tabs) in the job folder.
+ * The sheet is always in English; only the Tax code dropdown follows the invoice language.
+ * The Invoices tab keeps one row per source record; invoice-level details are written
+ * on each invoice's first row only, so one cell fixes the whole invoice. A blank label
+ * is written as "(no label)".
+ * @private
+ * @param {GoogleAppsScript.Drive.Folder} folder The job folder.
+ * @param {{mapping: Mapping, opts: Options, grouped: Grouped}} parsed The parsed upload.
+ * @param {string} jobId Job id.
+ * @param {string} sourceName Uploaded file name.
+ * @param {string} [originalId] Id of the copy of the uploaded file.
+ * @return {GoogleAppsScript.Spreadsheet.Spreadsheet} The new spreadsheet.
  */
 function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId) {
   const opts = parsed.opts, grouped = parsed.grouped;
-  const L = I18N[opts.language], S = L.sheet;
+  const L = I18N[opts.language];
+  const S = I18N.en.sheet; // the spreadsheet is always in English; only the invoice text follows the language
   const labels = grouped.detailLabels || [];
   const grouping = !!parsed.mapping.groupBy;
   // An empty header means "no column" in the sheet, so a blank label is written as a marker instead.
-  const sheetLabel = label => label ? cellText_(label) : L.noLabel;
+  const sheetLabel = label => label ? cellText_(label) : S.noLabel;
   const groupHeader = grouping ? sheetLabel(parsed.mapping.groupBy.label) : '';
   const width = SHEET_BASE_WIDTH + labels.length;
   const accent = accent_();
   const ss = SpreadsheetApp.create(S.fileName(safeName_(sourceName.replace(/\.[^.]+$/, ''))));
   DriveApp.getFileById(ss.getId()).moveTo(folder);
-  if (opts.language === 'fr') {
-    try { ss.setSpreadsheetLocale('fr_CA'); } catch (e) { /* keep the default locale */ }
-  }
 
   // ---- Invoices tab
   const items = ss.getSheets()[0].setName(S.itemsTab);
@@ -1121,7 +1732,16 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
   return ss;
 }
 
-/** Reads the spreadsheet, rebuilds the PDFs in the job folder, and records the file IDs. */
+/**
+ * Reads the editable spreadsheet and (re)builds the PDFs in the job folder. Labels come
+ * from the headers of columns X–AH; "(no label)" keeps a column but prints only its value.
+ * Numbers typed as text are read the English way. The job's own tax rates are used.
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @param {Run} [run] The run, for progress logs.
+ * @return {Built} The PDFs and what the results page needs.
+ * @throws {Error} When a tab or the folder is missing, or no invoices are found.
+ */
 function renderFromSpreadsheet_(ss, run) {
   const meta = readMeta_(ss);
   const items = sheetById_(ss, meta.itemsSheetId) || ss.getSheets()[0];
@@ -1134,7 +1754,7 @@ function renderFromSpreadsheet_(ss, run) {
   });
   const opts = normalizeLayoutOptions_(raw);
   opts.hasHeader = true;
-  opts.decimalComma = opts.language === 'fr'; // only matters for numbers typed as text
+  opts.decimalComma = false;                  // the sheet is English: numbers typed as text use 1,234.56
   opts.dateFormat = 'auto';                   // the sheet stores yyyy-mm-dd; anything else is guessed
   opts.taxRates = sanitizeRates_(meta.taxRates) || getTaxRates_().rates; // the rates this job was made with
   const L = I18N[opts.language];
@@ -1172,17 +1792,34 @@ function renderFromSpreadsheet_(ss, run) {
            opts: opts, L: L, meta: meta, folder: folder };
 }
 
-/** True for the sheet's "blank label" marker, in either language (any case). */
+/**
+ * Whether a spreadsheet header is the "blank label" marker, "(no label)" (any capitalisation).
+ * @private
+ * @param {*} s Header text.
+ * @return {boolean} True for the marker.
+ */
 function isNoLabel_(s) {
   const t = String(s || '').trim().toLowerCase();
-  return t === I18N.en.noLabel.toLowerCase() || t === I18N.fr.noLabel.toLowerCase();
+  return t === I18N.en.sheet.noLabel.toLowerCase();
 }
 
-/** "Label: value", or just "value" when the label is blank. */
+/**
+ * "Label: value", or just "value" when the label is blank.
+ * @private
+ * @param {string} label Label (may be blank).
+ * @param {string} value Value.
+ * @return {string} The text as printed.
+ */
 function labelled_(label, value) {
   return label ? label + ': ' + value : value;
 }
 
+/**
+ * Checks a stored set of tax rates.
+ * @private
+ * @param {*} r Rates keyed by {@link TAX_RATE_KEYS}.
+ * @return {?Object<string, number>} The rates as numbers, or null if any is missing or invalid.
+ */
 function sanitizeRates_(r) {
   if (!r || typeof r !== 'object') return null;
   const out = {};
@@ -1199,10 +1836,19 @@ function sanitizeRates_(r) {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds the PDFs. Files recorded in meta.files from an earlier build are
- * overwritten in place (same file, same link, Drive keeps the old version);
- * files that are no longer needed (a deleted invoice, a switched output mode)
- * are moved to the trash. The original data file is never touched.
+ * Builds the PDFs, one per invoice (plus a ZIP when there are several) or one combined PDF.
+ * Files recorded in `meta.files` from an earlier build are overwritten in place (same file,
+ * same link; Drive keeps the old version). Files no longer needed (a deleted invoice, a
+ * switched output mode) are trashed. The original data file is never touched.
+ * Updates `meta.files`.
+ * @private
+ * @param {Invoice[]} invoices The invoices.
+ * @param {Options} opts Output options.
+ * @param {Object} L Invoice wording for the language ({@link I18N}).
+ * @param {GoogleAppsScript.Drive.Folder} folder The job folder.
+ * @param {SheetMeta} meta The job's metadata.
+ * @param {Branding} branding Logo, company block and footer.
+ * @return {PdfOutput} Links to the PDFs.
  */
 function writePdfs_(invoices, opts, L, folder, meta, branding) {
   const prev = meta.files || {};
@@ -1212,8 +1858,8 @@ function writePdfs_(invoices, opts, L, folder, meta, branding) {
 
   if (opts.outputMode === 'combined') {
     const name = (invoices.length === 1
-      ? L.fileInvoice + ' ' + safeName_(invoices[0].number)
-      : L.fileAll + ' - ' + safeName_(String(meta.sourceName || 'invoices').replace(/\.[^.]+$/, ''))) + '.pdf';
+      ? pdfBaseName_(invoices[0])
+      : I18N.en.fileAll + ' - ' + safeName_(String(meta.sourceName || 'invoices').replace(/\.[^.]+$/, ''))) + '.pdf';
     const file = putFile_(folder, prev.combinedId, htmlToPdf_(invoicesHtml_(invoices, opts, L, branding), name));
     next.combinedId = file.getId();
     const url = file.getUrl();
@@ -1223,7 +1869,7 @@ function writePdfs_(invoices, opts, L, folder, meta, branding) {
   } else {
     const blobs = [];
     const results = invoices.map(inv => {
-      const base = L.fileInvoice + ' ' + safeName_(inv.number) + (inv.customerName ? ' - ' + safeName_(inv.customerName) : '');
+      const base = pdfBaseName_(inv);
       const pdf = htmlToPdf_(invoicesHtml_([inv], opts, L, branding), uniqueName_(base, blobs) + '.pdf');
       const file = putFile_(folder, prevPer[inv.number], pdf);
       next.perInvoice[inv.number] = file.getId();
@@ -1233,7 +1879,7 @@ function writePdfs_(invoices, opts, L, folder, meta, branding) {
     Object.keys(prevPer).forEach(k => { if (!(k in next.perInvoice)) trashFile_(prevPer[k]); });
     let zipUrl = null;
     if (blobs.length > 1) {
-      const zip = putFile_(folder, prev.zipId, Utilities.zip(blobs, L.fileAll + '.zip'));
+      const zip = putFile_(folder, prev.zipId, Utilities.zip(blobs, zipName_(invoices)));
       next.zipId = zip.getId();
       zipUrl = zip.getUrl();
     } else {
@@ -1247,7 +1893,49 @@ function writePdfs_(invoices, opts, L, folder, meta, branding) {
   return output;
 }
 
-/** Overwrites an existing Drive file (keeping its ID and link) or creates a new one. */
+/**
+ * File name (without ".pdf") of one invoice's PDF: the invoice number and the client name.
+ * File names are always English.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @return {string} e.g. "INV-1001 - Maple Productions", or "INV-1001" with no client name.
+ * @example
+ * pdfBaseName_({number: 'INV/7', customerName: 'Maple: West'}) // 'INV-7 - Maple- West' 
+ */
+function pdfBaseName_(inv) {
+  return safeName_(inv.number) + (inv.customerName ? ' - ' + safeName_(inv.customerName) : '');
+}
+
+/**
+ * ZIP file name: "All invoices - <client>.zip" when every invoice is for one client
+ * (ignoring capitalisation and extra spaces; blank client names don't count),
+ * otherwise "All invoices.zip".
+ * @private
+ * @param {Invoice[]} invoices The invoices in the ZIP.
+ * @return {string} The ZIP file name.
+ */
+function zipName_(invoices) {
+  const key = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const clients = {};
+  let first = '';
+  invoices.forEach(inv => {
+    const k = key(inv.customerName);
+    if (!k) return; // an invoice with no client name doesn't count as another client
+    if (!first) first = inv.customerName;
+    clients[k] = true;
+  });
+  const one = Object.keys(clients).length === 1;
+  return I18N.en.fileAll + (one ? ' - ' + safeName_(String(first).replace(/\s+/g, ' ').trim()) : '') + '.zip';
+}
+
+/**
+ * Overwrites an existing Drive file in place (same id and link) or creates a new one.
+ * @private
+ * @param {GoogleAppsScript.Drive.Folder} folder Where to create a new file.
+ * @param {?string} existingId Id of the file to overwrite, if any.
+ * @param {GoogleAppsScript.Base.Blob} blob The new contents and name.
+ * @return {GoogleAppsScript.Drive.File} The file.
+ */
 function putFile_(folder, existingId, blob) {
   if (existingId) {
     let file = null;
@@ -1265,15 +1953,34 @@ function putFile_(folder, existingId, blob) {
   return folder.createFile(blob);
 }
 
+/**
+ * Moves a file to the trash. Missing files are ignored.
+ * @private
+ * @param {?string} id File id.
+ */
 function trashFile_(id) {
   if (!id) return;
   try { DriveApp.getFileById(id).setTrashed(true); } catch (e) { /* already gone */ }
 }
 
+/**
+ * Converts invoice HTML to a PDF with Google's converter.
+ * @private
+ * @param {string} html The page HTML.
+ * @param {string} name PDF file name.
+ * @return {GoogleAppsScript.Base.Blob} The PDF.
+ */
 function htmlToPdf_(html, name) {
   return Utilities.newBlob(html, MimeType.HTML, 'invoice.html').getAs(MimeType.PDF).setName(name);
 }
 
+/**
+ * One row of the results page and email list.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {string} url Link to its PDF.
+ * @return {{number: string, customer: string, total: string, url: string}} The row.
+ */
 function invoiceSummary_(inv, url) {
   return { number: inv.number, customer: inv.customerName, total: formatMoney_(inv.total), url: url };
 }
@@ -1282,6 +1989,16 @@ function invoiceSummary_(inv, url) {
 // Email
 // ---------------------------------------------------------------------------
 
+/**
+ * Emails the links (PDFs, ZIP, spreadsheet, folder, original file, rebuild page) to the
+ * user. Always in English, from the user's own account, with the no-reply sender name.
+ * @private
+ * @param {string} to Recipient (the signed-in user).
+ * @param {Built} built The rendered job.
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @param {boolean} updated True after a Rebuild ("Updated:" subject).
+ * @throws {Error} When the daily email quota is used up.
+ */
 function sendResultEmail_(to, built, ss, updated) {
   if (MailApp.getRemainingDailyQuota() < 1) {
     throw userError_('the daily email limit has been reached. Use the links on this page instead.');
@@ -1355,10 +2072,16 @@ function sendResultEmail_(to, built, ss, updated) {
 // ---------------------------------------------------------------------------
 
 /**
- * Reads an uploaded CSV or Excel file. Returns { rows, rowNumbers, decimalComma, notes }:
- * rows are the cell values, rowNumbers the file's own row numbers (for messages),
- * decimalComma a guess at whether numbers use a decimal comma (1 234,56).
- * Rows hidden in Excel (by a filter or by hand) are left out.
+ * Reads an uploaded CSV or Excel file. CSVs are decoded (UTF-8 or Windows-1252) and split
+ * on the detected delimiter. Excel files are converted through a temporary Google Sheet,
+ * and rows hidden in Excel (by a filter or by hand) are left out.
+ * @private
+ * @param {UploadFile} file The uploaded file.
+ * @param {string} jobId Job id (names the temporary Google Sheet).
+ * @return {{rows: Array<Array<*>>, rowNumbers: number[], decimalComma: boolean, notes: string[], hiddenRows: number}}
+ *   Cell values, the file's own row numbers, whether numbers seem to use a decimal comma,
+ *   notes, and how many hidden rows were left out.
+ * @throws {Error} When no file is given or the type isn't supported.
  */
 function readRows_(file, jobId) {
   if (!file || !file.base64) throw userError_('Please choose a CSV or XLSX file first.');
@@ -1412,8 +2135,11 @@ function readRows_(file, jobId) {
 }
 
 /**
- * 0-based indexes of rows hidden by a filter or by hand, from one Sheets API call.
- * Returns { 3: true, 7: true, ... }.
+ * Rows hidden by a filter or by hand, from one Sheets API call.
+ * @private
+ * @param {string} spreadsheetId The temporary Google Sheet.
+ * @param {string} sheetName The tab to check.
+ * @return {Object<number, boolean>} 0-based indexes of hidden rows, e.g. {3: true, 7: true}.
  */
 function hiddenRowIndexes_(spreadsheetId, sheetName) {
   const res = Sheets.Spreadsheets.get(spreadsheetId, {
@@ -1432,9 +2158,12 @@ function hiddenRowIndexes_(spreadsheetId, sheetName) {
 }
 
 /**
- * Cell values of a Google Sheet range. Dates become yyyy-MM-dd; numbers stay
- * numbers (so the sheet's locale can't confuse parsing), except percentages,
- * which keep their "%" text.
+ * Cell values of a Google Sheet range. Dates become yyyy-MM-dd; numbers stay numbers
+ * (so the sheet's locale can't confuse parsing), except percentages, which keep their "%".
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Range} range The range to read.
+ * @param {string} tz The spreadsheet's time zone.
+ * @return {Array<Array<*>>} The values.
  */
 function sheetToRows_(range, tz) {
   const values = range.getValues();
@@ -1446,14 +2175,25 @@ function sheetToRows_(range, tz) {
   }));
 }
 
-/** UTF-8, falling back to Windows-1252 (common for CSVs saved by Excel with accents). */
+/**
+ * Decodes CSV bytes as UTF-8, falling back to Windows-1252 (common for CSVs saved by Excel
+ * with accents). A byte-order mark is removed.
+ * @private
+ * @param {number[]} bytes The file's bytes.
+ * @return {string} The text.
+ */
 function decodeText_(bytes) {
   let text = Utilities.newBlob(bytes).getDataAsString('UTF-8');
   if (text.indexOf('�') !== -1) text = Utilities.newBlob(bytes).getDataAsString('windows-1252');
   return text.replace(/^﻿/, '');
 }
 
-/** Picks , ; or tab based on the first line. French Excel saves CSVs with ";". */
+/**
+ * Picks the CSV delimiter (",", ";" or tab) from the first line. French Excel saves CSVs with ";".
+ * @private
+ * @param {string} text The CSV text.
+ * @return {string} The delimiter.
+ */
 function detectDelimiter_(text) {
   const counts = { ',': 0, ';': 0, '\t': 0 };
   let inQuotes = false;
@@ -1471,8 +2211,12 @@ function detectDelimiter_(text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Validates column letters and converts them to zero-based indexes.
- * raw.details: up to 10 { col, label }; raw.groupBy: { col, label } (optional).
+ * Checks the column letters and converts them to 0-based indexes. Keys saved by older
+ * versions (employeeName, description, quantity, customerAddress) are still accepted.
+ * @private
+ * @param {FormMapping} raw Column letters as sent by the form.
+ * @return {Mapping} Column indexes, details and grouping.
+ * @throws {Error} When a required field is missing or a letter is invalid.
  */
 function normalizeMapping_(raw) {
   const mapping = {};
@@ -1510,7 +2254,12 @@ function normalizeMapping_(raw) {
   return mapping;
 }
 
-/** Cleans up the options and fills in defaults. Never trusts the client. */
+/**
+ * Cleans up the form options and fills in defaults. Never trusts the page.
+ * @private
+ * @param {Object} o Options as sent.
+ * @return {Options} The clean options.
+ */
 function normalizeOptions_(o) {
   return Object.assign(normalizeLayoutOptions_(o), {
     hasHeader: !!o.hasHeader,
@@ -1519,7 +2268,12 @@ function normalizeOptions_(o) {
   });
 }
 
-/** Options that control how invoices look. Shared by the web form and the spreadsheet's Settings tab. */
+/**
+ * Options that control how invoices look. Shared by the web form and the spreadsheet's Settings tab.
+ * @private
+ * @param {Object} o Raw options (language, outputMode, combineEmployees).
+ * @return {Options} Language, output mode and combine setting.
+ */
 function normalizeLayoutOptions_(o) {
   const str = (v, max) => String(v == null ? '' : v).trim().slice(0, max);
   return {
@@ -1531,14 +2285,21 @@ function normalizeLayoutOptions_(o) {
 }
 
 /**
- * Groups rows (single-line records) into invoices.
- * Returns { invoices, skipped: rows not invoiced, notes: non-blocking messages, detailLabels }.
+ * Groups rows (single-line records) into invoices and computes their lines, groups,
+ * units summary, subtotal, taxes and total.
+ *
  * Rules:
- *  - a fully blank row is ignored; a row with no invoice number is skipped and listed;
- *  - Units or Rate that are blank or not numbers count as 0, with a note;
- *  - invoice details come from the first row of the invoice that has them; the
- *    address comes whole from the first row that has any address part;
- *  - the first tax code found applies to the whole invoice; unknown → EXEMPT.
+ * - a fully blank row is ignored; a row with no invoice number is skipped and listed;
+ * - Units or Rate that are blank or not numbers count as 0, with a note;
+ * - invoice details come from the first row of the invoice that has them; the address
+ *   comes whole from the first row that has any address part;
+ * - the first tax code found applies to the whole invoice; unknown → EXEMPT, with a note.
+ * @private
+ * @param {Array<Array<*>>} rows The data rows (no header).
+ * @param {Mapping} m Column indexes, details and grouping.
+ * @param {Options} opts Options, including decimalComma and taxRates.
+ * @param {number[]} [rowNums] The file's own row numbers, for messages.
+ * @return {Grouped} Invoices, skipped rows, notes and detail labels.
  */
 function groupInvoices_(rows, m, opts, rowNums) {
   const L = I18N[opts.language] || I18N.en;
@@ -1645,10 +2406,13 @@ function groupInvoices_(rows, m, opts, rowNums) {
 }
 
 /**
- * Turns raw items into PDF line items. When combining, rows with the same group,
- * candidate/role, line type, work order, purchase order and rate become one
- * line: units are added up, the work dates become a range, and differing detail
- * values are listed. A different rate or line type (e.g. overtime) stays separate.
+ * Turns an invoice's items into printed lines. When combining, items with the same group,
+ * candidate/role, line type, work order, purchase order and rate become one line: units
+ * are added up, the work dates become a range, and differing detail values are listed.
+ * @private
+ * @param {Item[]} items The invoice's items.
+ * @param {boolean} combine Combine matching items.
+ * @return {Line[]} The lines.
  */
 function buildLines_(items, combine) {
   const toLine = it => ({
@@ -1679,9 +2443,12 @@ function buildLines_(items, combine) {
 }
 
 /**
- * Groups lines under headings: [{ value, lines }] in order of first appearance.
- * Lines with no group value come first, with no heading (value ''). With no group
- * values at all, there is a single headingless group.
+ * Puts lines under group headings, in order of first appearance. Lines with no group
+ * value come first, with no heading (value ''). With no group values at all, there is
+ * a single headingless group.
+ * @private
+ * @param {Line[]} lines The lines.
+ * @return {Group[]} The groups.
  */
 function groupLines_(lines) {
   const blank = lines.filter(ln => !ln.group);
@@ -1695,7 +2462,14 @@ function groupLines_(lines) {
   return (blank.length ? [{ value: '', lines: blank }] : []).concat(groups);
 }
 
-/** Units per line type for one invoice (no total row). Types match ignoring case and extra spaces. */
+/**
+ * Units per line type for one invoice. Types match ignoring case and extra spaces;
+ * a blank type is listed as "Other" / "Autre".
+ * @private
+ * @param {Item[]} items The invoice's items.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @return {Array<{type: string, units: number}>} Units per type, in order of first appearance.
+ */
 function unitsSummary_(items, L) {
   const out = [];
   const byKey = {};
@@ -1709,7 +2483,15 @@ function unitsSummary_(items, L) {
   return out;
 }
 
-/** Combines the address parts into printed lines: 1–4, "City, ST  Postal", Country. */
+/**
+ * Combines the address parts into printed lines: address 1–4, "City, ST  Postal", Country.
+ * @private
+ * @param {?Object<string, string>} p Address parts keyed by {@link ADDRESS_KEYS}.
+ * @return {string[]} The address lines.
+ * @example
+ * formatClientAddress_({address1: '1 Main St', city: 'Toronto', province: 'ON', postalCode: 'm5v 1a1', country: 'Canada'})
+ * // ['1 Main St', 'Toronto, ON  M5V 1A1', 'Canada']
+ */
 function formatClientAddress_(p) {
   if (!p) return [];
   const t = k => cleanText_(p[k]);
@@ -1728,9 +2510,14 @@ function formatClientAddress_(p) {
 // ---------------------------------------------------------------------------
 
 /**
- * Day/month order for dates like 03/11/2026. "auto" looks for a value that
- * settles it (a first number above 12 means day-first); if none does, it
- * guesses day-first for French-style files and month-first otherwise.
+ * Day/month order for dates like 03/11/2026. With "auto", the first value that settles
+ * it wins (a first number above 12 means day-first); if none does, it guesses day-first
+ * for French-style files and month-first otherwise.
+ * @private
+ * @param {Array<Array<*>>} rows The data rows.
+ * @param {Mapping} m Column indexes (invoice, due and work dates are checked).
+ * @param {Options} opts Options (dateFormat, decimalComma, language).
+ * @return {string} "mdy" or "dmy".
  */
 function resolveDateOrder_(rows, m, opts) {
   if (opts.dateFormat === 'dmy' || opts.dateFormat === 'mdy') return opts.dateFormat;
@@ -1747,7 +2534,16 @@ function resolveDateOrder_(rows, m, opts) {
   return opts.decimalComma || opts.language === 'fr' ? 'dmy' : 'mdy';
 }
 
-/** Converts 2026-11-03, 03/11/2026, 11-3-26 … to yyyy-mm-dd. Anything else is returned unchanged. */
+/**
+ * Converts a date to yyyy-mm-dd. Anything that isn't a valid date is returned unchanged.
+ * @private
+ * @param {*} value The date as written, e.g. "2026-11-03", "03/11/2026" or "11-3-26".
+ * @param {string} order "mdy" or "dmy", for dates like 03/11/2026.
+ * @return {string} yyyy-mm-dd, the original text, or ''.
+ * @example
+ * normalizeDate_('03/11/2026', 'dmy') // '2026-11-03'
+ * normalizeDate_('11-3-26', 'mdy')    // '2026-11-03' 
+ */
 function normalizeDate_(value, order) {
   const t = String(value == null ? '' : value).trim();
   if (!t) return '';
@@ -1765,7 +2561,12 @@ function normalizeDate_(value, order) {
   return t;
 }
 
-/** yyyy-mm-dd → MM/DD/YYYY (both languages). Anything else is shown as written. */
+/**
+ * Formats a yyyy-mm-dd date as MM/DD/YYYY (both languages). Anything else is shown as written.
+ * @private
+ * @param {*} value The date.
+ * @return {string} The printed date.
+ */
 function formatDate_(value) {
   const s = String(value || '').trim();
   const m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ].*)?$/);
@@ -1773,7 +2574,12 @@ function formatDate_(value) {
   return ('0' + m[2]).slice(-2) + '/' + ('0' + m[3]).slice(-2) + '/' + m[1];
 }
 
-/** The date or date range for a line: "11/03/2026" or "11/03/2026 – 11/05/2026". */
+/**
+ * The printed date or date range of a line.
+ * @private
+ * @param {string[]} dates The line's work dates.
+ * @return {string} e.g. "11/03/2026" or "11/03/2026 – 11/05/2026".
+ */
 function formatDateSpan_(dates) {
   const isoDates = dates.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
   if (!isoDates.length) return dates.filter((d, i) => dates.indexOf(d) === i).join(', ');
@@ -1785,7 +2591,16 @@ function formatDateSpan_(dates) {
 // PDF HTML: pages, header, body, summary, totals, footer
 // ---------------------------------------------------------------------------
 
-/** The whole PDF for one or more invoices; each invoice starts on a new page. */
+/**
+ * The whole PDF page HTML for one or more invoices; each invoice starts on a new page.
+ * Each page has the page number at the top right; the footer row (last page only) sits at the bottom.
+ * @private
+ * @param {Invoice[]} invoices The invoices.
+ * @param {Options} opts Options.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @param {Branding} branding Logo, company block and footer.
+ * @return {string} A complete HTML document.
+ */
 function invoicesHtml_(invoices, opts, L, branding) {
   const pages = [];
   invoices.forEach(inv => { invoicePages_(inv, opts, L, branding).forEach(p => pages.push(p)); });
@@ -1803,6 +2618,13 @@ function invoicesHtml_(invoices, opts, L, branding) {
   return wrapHtml_(html, branding.accent);
 }
 
+/**
+ * Wraps the pages in an HTML document with the invoice styles.
+ * @private
+ * @param {string[]} pages HTML of each page.
+ * @param {string} accent Accent colour.
+ * @return {string} A complete HTML document.
+ */
 function wrapHtml_(pages, accent) {
   const a = accent || DEFAULT_ACCENT;
   const wrap = 'overflow-wrap:anywhere;word-wrap:break-word;word-break:break-word;';
@@ -1852,9 +2674,15 @@ function wrapHtml_(pages, accent) {
 }
 
 /**
- * Splits one invoice into pages: [{ content, footer, number }]. The footer
- * (bank details, remittance, disclosure) is only on the last page: in its own
+ * The pages of one invoice. The full header is on page 1 and a condensed one after.
+ * The units summary and totals are on the last page, and so is the footer: in its own
  * bottom row when FOOTER_AT_PAGE_BOTTOM is on, otherwise right after the totals.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Options} opts Options.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @param {Branding} branding Logo, company block and footer.
+ * @return {Array<{content: string, footer: string, number: string}>} Page HTML, footer HTML and "Page X of Y".
  */
 function invoicePages_(inv, opts, L, branding) {
   const pages = paginateInvoice_(inv, branding);
@@ -1868,9 +2696,23 @@ function invoicePages_(inv, opts, L, branding) {
   });
 }
 
+/**
+ * Estimated number of printed lines for a text at a given number of characters per line.
+ * @private
+ * @param {*} s The text.
+ * @param {number} per Characters per line.
+ * @return {number} At least 1.
+ */
 const textLines_ = (s, per) => Math.max(1, Math.ceil(String(s || '').length / per));
 
-/** Estimated height (pt) of one line row. */
+/**
+ * Estimated height of one line row. The first column stacks the name and the extra-detail
+ * lines; the other columns sit beside it, so the row is as tall as the tallest column.
+ * @private
+ * @param {Line} ln The line.
+ * @param {string[]} labels Extra-detail labels.
+ * @return {number} Height in points.
+ */
 function lineHeight_(ln, labels) {
   // The first column stacks the name and the extra-detail lines; the other
   // columns sit beside it, so the row is as tall as the tallest column.
@@ -1884,7 +2726,13 @@ function lineHeight_(ln, labels) {
   return PAGE.LINE_PAD + Math.max(first, others);
 }
 
-/** Estimated height (pt) of the full header on page 1. */
+/**
+ * Estimated height of the full header on page 1.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Branding} branding Company block.
+ * @return {number} Height in points.
+ */
 function fullHeaderHeight_(inv, branding) {
   const block = lines => lines.reduce((n, s) => n + textLines_(s, 44), 0);
   const clientLines = textLines_(inv.customerName, 38) + (inv.attention ? textLines_('ATTN: ' + inv.attention, 44) : 0) +
@@ -1894,7 +2742,13 @@ function fullHeaderHeight_(inv, branding) {
   return Math.max(62, details * 13 + 10) + 10 + Math.max(clientLines, companyLines) * 12 + 24;
 }
 
-/** Estimated height (pt) of the units summary, totals and footer on the last page. */
+/**
+ * Estimated height of the units summary, totals and footer on the last page.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Branding} branding Footer.
+ * @return {number} Height in points.
+ */
 function tailHeight_(inv, branding) {
   const f = branding.footer;
   const summary = PAGE.GAP_BODY_SUMMARY + Math.max(3 + inv.unitsSummary.length, 2 + inv.taxes.length) * 13 + 6;
@@ -1907,11 +2761,15 @@ function tailHeight_(inv, branding) {
 }
 
 /**
- * Splits an invoice's rows into pages. Each page gets: page number, header (full
- * on page 1, condensed after), column headings, as many rows as fit. The last
- * page must also fit the summary, totals and footer. Group headings stay with
- * their next line, and repeat with "(continued)" on the next page.
- * Returns [[row, ...], ...] where row = { type: 'group'|'line', ... }.
+ * Splits an invoice's rows into pages using the height estimates in {@link PAGE}.
+ * Each page gets the page number, a header (full on page 1, condensed after), the column
+ * headings and as many rows as fit; the last page must also fit the summary, totals and
+ * footer. Group headings stay with their next line and repeat with "(continued)".
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Branding} branding Company block and footer (for the height estimates).
+ * @return {Array<Array<{type: string, group: Group, line: Line, continued: boolean, h: number}>>}
+ *   Rows of each page; a row is a group heading (`type: 'group'`) or a line (`type: 'line'`).
  */
 function paginateInvoice_(inv, branding) {
   const labels = inv.detailLabels || [];
@@ -1961,14 +2819,24 @@ function paginateInvoice_(inv, branding) {
   return pages.map(p => p.rows);
 }
 
+/**
+ * Estimated height of a group heading row.
+ * @private
+ * @param {Invoice} inv The invoice (for its group label).
+ * @param {Group} g The group.
+ * @return {number} Height in points.
+ */
 function groupRowHeight_(inv, g) {
   return PAGE.GROUP_ROW + (textLines_(labelled_(inv.groupLabel, g.value) + ' (continued)', 100) - 1) * PAGE.TEXT_LINE;
 }
 
 /**
- * Escaped text with invisible break points (<wbr>) inside long unbroken words,
- * so long codes and names wrap inside their cell instead of overflowing.
- * Words of 14 characters or fewer (dates, amounts, most codes) are untouched.
+ * Escapes text for HTML and adds invisible break points (<wbr>) inside long unbroken words,
+ * so long codes and names wrap inside their cell instead of overflowing. Words of 14
+ * characters or fewer are untouched.
+ * @private
+ * @param {*} s The text.
+ * @return {string} Safe HTML.
  */
 function softText_(s) {
   return String(s == null ? '' : s).split(/(\s+)/).map(word => {
@@ -1984,6 +2852,13 @@ function softText_(s) {
   }).join('');
 }
 
+/**
+ * The invoice details at the top right: Invoice #, Client #, Invoice Date, Payment Due Date.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @return {string} HTML table.
+ */
 function headerDetailsHtml_(inv, L) {
   const vals = [inv.number, inv.clientNumber, formatDate_(inv.invoiceDate), formatDate_(inv.dueDate)];
   return '<table class="hdr-details" style="width:auto;margin-left:auto">' +
@@ -1992,11 +2867,26 @@ function headerDetailsHtml_(inv, L) {
     '</table>';
 }
 
+/**
+ * The logo image, or '' when there is no logo.
+ * @private
+ * @param {Branding} branding Branding with the logo data URI.
+ * @param {number} heightPt Logo height in points.
+ * @return {string} HTML.
+ */
 function logoHtml_(branding, heightPt) {
   return branding.logo ? '<img src="' + branding.logo + '" style="height:' + heightPt + 'pt" alt="">' : '';
 }
 
-/** Full header (page 1): logo + invoice details, client block + company block, confidentiality phrase. */
+/**
+ * Full header (page 1): logo and invoice details, the client block and the company block,
+ * then the confidentiality phrase.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @param {Branding} branding Logo and company block.
+ * @return {string} HTML.
+ */
 function headerHtml_(inv, L, branding) {
   const lines = arr => arr.map(s => '<div>' + softText_(s).replace(/ {2}/g, ' &nbsp;') + '</div>').join('');
   const client = '<div class="name">' + softText_(inv.customerName || '') + '</div>' +
@@ -2015,7 +2905,14 @@ function headerHtml_(inv, L, branding) {
     '</table>';
 }
 
-/** Condensed header (pages 2+): small logo + invoice details, client name. */
+/**
+ * Condensed header (pages 2+): small logo, client name and invoice details.
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @param {Branding} branding Logo.
+ * @return {string} HTML.
+ */
 function condensedHeaderHtml_(inv, L, branding) {
   return '<table class="hdr">' +
     '<tr><td class="block" style="width:50%">' + logoHtml_(branding, 32) +
@@ -2024,8 +2921,16 @@ function condensedHeaderHtml_(inv, L, branding) {
     '</table>';
 }
 
-/** The 8-column body table for one page's rows. */
+/** @const {number[]} Width (%) of each of the 8 body columns. */
 const COLUMN_WIDTHS = [21, 11, 11, 14, 10, 8, 11, 14];
+/**
+ * The 8-column body table for one page's rows. A blank group or detail label prints only the value.
+ * @private
+ * @param {Array<Object>} rows The page's rows from {@link paginateInvoice_}.
+ * @param {Invoice} inv The invoice.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @return {string} HTML table.
+ */
 function itemsTableHtml_(rows, inv, L) {
   const num = [false, false, false, false, false, true, true, true];
   const head = '<tr>' + L.columns.map((c, i) =>
@@ -2056,7 +2961,13 @@ function itemsTableHtml_(rows, inv, L) {
   return '<table class="items">' + head + body + '</table>';
 }
 
-/** Units summary with a total (left) and subtotal / taxes / total (right). */
+/**
+ * Units summary with its total (left) and subtotal, taxes and total (right).
+ * @private
+ * @param {Invoice} inv The invoice.
+ * @param {Object} L Invoice wording ({@link I18N}).
+ * @return {string} HTML.
+ */
 function summaryTotalsHtml_(inv, L) {
   const totalUnits = Math.round(inv.unitsSummary.reduce((n, r) => n + r.units, 0) * 1000) / 1000;
   const units = '<div class="section">' + esc_(L.summaryTitle) + '</div>' +
@@ -2080,7 +2991,12 @@ function summaryTotalsHtml_(inv, L) {
     '</tr></table>';
 }
 
-/** Invoice footer: bank block, remittance line, disclosure. Empty settings print nothing. */
+/**
+ * Invoice footer: bank block, remittance line and disclosure. Empty settings print nothing.
+ * @private
+ * @param {Object} f The footer part of {@link Branding}.
+ * @return {string} HTML, or '' when there's nothing to print.
+ */
 function footerHtml_(f) {
   if (!f || !(f.paymentTitle || f.bankAddress.length || f.bankDetails.length || f.remittance || f.disclosure)) return '';
   const left = (f.paymentTitle ? '<div class="pay">' + esc_(f.paymentTitle) + '</div>' : '') +
@@ -2102,8 +3018,10 @@ function footerHtml_(f) {
 // ---------------------------------------------------------------------------
 
 /**
- * Root "Invoice PDFs" folder. Its ID is cached in user properties. The lock
- * stops two simultaneous first-time submissions from creating two folders.
+ * The user's root "Morph - Invoice PDFs" folder, created on first use. Its id is cached in
+ * user properties; the lock stops two first-time submissions creating two folders.
+ * @private
+ * @return {GoogleAppsScript.Drive.Folder} The root folder.
  */
 function getRootFolder_() {
   const props = PropertiesService.getUserProperties();
@@ -2135,24 +3053,46 @@ function getRootFolder_() {
   }
 }
 
-/** A new folder per submission. The job ID makes the name unique even within the same second. */
+/**
+ * A new folder for one submission: "<date time> - <file name> (<job id>)".
+ * The job id makes the name unique even within the same second.
+ * @private
+ * @param {string} sourceName Uploaded file name.
+ * @param {string} jobId Job id.
+ * @return {GoogleAppsScript.Drive.Folder} The job folder.
+ */
 function createJobFolder_(sourceName, jobId) {
   const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH-mm-ss');
   return getRootFolder_().createFolder(
     stamp + ' - ' + safeName_(String(sourceName || 'upload').replace(/\.[^.]+$/, '')) + ' (' + jobId + ')');
 }
 
+/**
+ * Remembers the form as the user's last-used settings.
+ * @private
+ * @param {FormMapping} mapping Column letters.
+ * @param {FormOptions} options Options.
+ */
 function saveSettings_(mapping, options) {
   PropertiesService.getUserProperties()
     .setProperty(settingsKey_(), JSON.stringify(sanitizeFormState_(mapping, options)));
 }
 
-/** Saved settings are keyed by the signed-in user's email (user properties are per user anyway). */
+/**
+ * Property key of the user's last-used settings.
+ * @private
+ * @return {string} "settings:<email>".
+ */
 function settingsKey_() {
   const email = currentUserEmail_().toLowerCase();
   return email ? 'settings:' + email : 'settings';
 }
 
+/**
+ * The signed-in user's email.
+ * @private
+ * @return {string} The email, or '' when it isn't available.
+ */
 function currentUserEmail_() {
   try {
     return Session.getActiveUser().getEmail() || '';
@@ -2163,8 +3103,15 @@ function currentUserEmail_() {
 
 // ---- Spreadsheet metadata (hidden "_meta" tab) and rebuild locking ----
 
+/** @const {string[]} _meta keys stored as JSON. */
 const META_JSON_KEYS = ['files', 'taxRates'];
 
+/**
+ * Reads the job details from the spreadsheet's hidden "_meta" tab.
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @return {?SheetMeta} The details, or null when the spreadsheet wasn't made by this app.
+ */
 function readMeta_(ss) {
   const sh = ss.getSheetByName(META_SHEET);
   if (!sh) return null;
@@ -2177,11 +3124,17 @@ function readMeta_(ss) {
   return meta;
 }
 
+/**
+ * Writes the job details to the hidden, protected "_meta" tab (creating it the first time).
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @param {SheetMeta} meta The details.
+ */
 function writeMeta_(ss, meta) {
   let sh = ss.getSheetByName(META_SHEET);
   if (!sh) {
     sh = ss.insertSheet(META_SHEET);
-    sh.getRange('A1').setNote('Used by Invoice PDF Generator to find this job\'s files. Please do not edit.');
+    sh.getRange('A1').setNote('Used by Morph - Invoice PDF Generator to find this job\'s files. Please do not edit.');
     sh.protect().setWarningOnly(true);
     sh.hideSheet();
   }
@@ -2192,8 +3145,11 @@ function writeMeta_(ss, meta) {
 }
 
 /**
- * Marks the spreadsheet as "being rebuilt". The script lock is held only for
- * this quick check-and-set, so other users' jobs are never blocked by a long rebuild.
+ * Marks the spreadsheet as being rebuilt, so two people (or tabs) can't rebuild it at once.
+ * The script lock is held only for this quick check-and-set.
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ * @throws {Error} When it's already being rebuilt.
  */
 function claimSpreadsheet_(ss) {
   const lock = LockService.getScriptLock();
@@ -2211,6 +3167,11 @@ function claimSpreadsheet_(ss) {
   }
 }
 
+/**
+ * Clears the "being rebuilt" mark. If this fails, the mark expires on its own.
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The editable spreadsheet.
+ */
 function releaseSpreadsheet_(ss) {
   try {
     const meta = readMeta_(ss);
@@ -2220,36 +3181,70 @@ function releaseSpreadsheet_(ss) {
   } catch (e) { /* the marker expires on its own */ }
 }
 
+/**
+ * Finds a tab by its sheet id.
+ * @private
+ * @param {GoogleAppsScript.Spreadsheet.Spreadsheet} ss The spreadsheet.
+ * @param {(number|string)} id Sheet id.
+ * @return {?GoogleAppsScript.Spreadsheet.Sheet} The tab, or null.
+ */
 function sheetById_(ss, id) {
   if (id === '' || id == null) return null;
   return ss.getSheets().filter(sh => String(sh.getSheetId()) === String(id))[0] || null;
 }
 
-/** Accepts a Google Sheets URL or a bare spreadsheet ID. */
+/**
+ * The spreadsheet id from a Google Sheets link or a bare id.
+ * @private
+ * @param {*} input A link or id.
+ * @return {string} The id, or ''.
+ */
 function extractSpreadsheetId_(input) {
   const s = String(input || '').trim();
   const m = s.match(/\/d\/([A-Za-z0-9_-]{20,})/) || s.match(/^([A-Za-z0-9_-]{20,})$/);
   return m ? m[1] : '';
 }
 
-/** Web app link that opens the page in rebuild mode for this spreadsheet. */
+/**
+ * Web app link that opens the page in rebuild mode for a spreadsheet.
+ * @private
+ * @param {string} spreadsheetId The spreadsheet id.
+ * @return {string} The link, or '' when the web app isn't deployed.
+ */
 function rebuildUrl_(spreadsheetId) {
   let base = '';
   try { base = ScriptApp.getService().getUrl() || ''; } catch (e) { base = ''; }
   return base ? base + '?rebuild=' + encodeURIComponent(spreadsheetId) : '';
 }
 
+/**
+ * A spreadsheet HYPERLINK formula with quotes escaped.
+ * @private
+ * @param {string} url Link.
+ * @param {string} label Text shown.
+ * @return {string} The formula.
+ */
 function hyperlink_(url, label) {
   const q = v => '"' + String(v).replace(/"/g, '""') + '"';
   return '=HYPERLINK(' + q(url) + ',' + q(label) + ')';
 }
 
-/** Text for a spreadsheet cell. A leading ' stops values like "=..." or "+1 call" being read as formulas. */
+/**
+ * Text for a spreadsheet cell. A leading ' stops values like "=..." or "+1 call" being read as formulas.
+ * @private
+ * @param {*} v The value.
+ * @return {string} Safe cell text.
+ */
 function cellText_(v) {
   const s = String(v == null ? '' : v);
   return /^[=+\-@]/.test(s) ? "'" + s : s;
 }
 
+/**
+ * A new 10-character job (run) id.
+ * @private
+ * @return {string} The id.
+ */
 function newJobId_() {
   return Utilities.getUuid().replace(/-/g, '').slice(0, 10);
 }
@@ -2258,14 +3253,30 @@ function newJobId_() {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** "A" -> 0, "Z" -> 25, "AA" -> 26 */
+/**
+ * Column letters to a 0-based index.
+ * @private
+ * @param {string} letters Upper-case letters.
+ * @return {number} The index.
+ * @example
+ * colToIndex_('A')  // 0
+ * colToIndex_('AA') // 26
+ */
 function colToIndex_(letters) {
   let n = 0;
   for (let i = 0; i < letters.length; i++) n = n * 26 + (letters.charCodeAt(i) - 64);
   return n - 1;
 }
 
-/** 0 -> "A", 26 -> "AA" */
+/**
+ * A 0-based index to column letters.
+ * @private
+ * @param {number} i The index.
+ * @return {string} The letters.
+ * @example
+ * indexToCol_(0)   // 'A'
+ * indexToCol_(701) // 'ZZ' 
+ */
 function indexToCol_(i) {
   let s = '';
   for (let n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) {
@@ -2275,13 +3286,19 @@ function indexToCol_(i) {
 }
 
 /**
- * Parses English and French number styles: "$1,234.50", "1 234,50 $",
- * "1.234,50 €", "12%", "(5.00)", "-5". Returns NaN when empty/invalid.
- *
- * When a value has both "," and ".", whichever comes last is the decimal
- * separator. When it has only one kind, decimalComma decides: true reads
- * "14,975" as 14.975 (French), false reads it as 14975 (English).
- * Text with letters (e.g. "8 hrs", "n/a") is invalid.
+ * Parses English and French number styles. When a value has both "," and ".", whichever
+ * comes last is the decimal separator. With only one kind, `decimalComma` decides: true
+ * reads "14,975" as 14.975 (French), false reads it as 14975 (English). Currency symbols,
+ * spaces and % are ignored; text with letters (e.g. "8 hrs") is invalid.
+ * @private
+ * @param {*} v The value.
+ * @param {boolean} decimalComma Single commas are decimal separators.
+ * @return {number} The number, or NaN when empty or invalid.
+ * @example
+ * parseNumber_('$1,234.50', false) // 1234.5
+ * parseNumber_('1 234,50 $', true) // 1234.5
+ * parseNumber_('(5.00)', false)    // -5
+ * parseNumber_('8 hrs', false)     // NaN
  */
 function parseNumber_(v, decimalComma) {
   if (typeof v === 'number') return v;
@@ -2312,33 +3329,67 @@ function parseNumber_(v, decimalComma) {
   return negative ? -n : n;
 }
 
+/**
+ * Rounds to the cent.
+ * @private
+ * @param {number} n The amount.
+ * @return {number} The rounded amount.
+ */
 function round2_(n) { return Math.round((n + Number.EPSILON) * 100) / 100; }
 
-/** Money, the same in both languages: $1,234.50 / -$50.00 */
+/**
+ * Money, the same in both languages.
+ * @private
+ * @param {number} n The amount.
+ * @return {string} e.g. "$1,234.50" or "-$50.00".
+ */
 function formatMoney_(n) {
   const sign = n < 0 ? '-' : '';
   const parts = Math.abs(round2_(n)).toFixed(2).split('.');
   return sign + '$' + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + '.' + parts[1];
 }
 
-/** Units and percentages, the same in both languages: 24.5, 1,250, 9.975 */
+/**
+ * Units and percentages, the same in both languages: thousands separators, up to 3 decimals.
+ * @private
+ * @param {(number|string)} n The value.
+ * @return {string} e.g. "24.5", "1,250" or "9.975".
+ */
 function formatQty_(n) {
   const r = Math.round(Number(n) * 1000) / 1000;
   const parts = String(Math.abs(r)).split('.');
   return (r < 0 ? '-' : '') + parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (parts[1] ? '.' + parts[1] : '');
 }
 
+/**
+ * Escapes text for HTML.
+ * @private
+ * @param {*} s The text.
+ * @return {string} Safe HTML text.
+ */
 function esc_(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
+/**
+ * A Drive-safe file name: characters Drive can't use become "-", up to 80 characters.
+ * @private
+ * @param {*} s The name.
+ * @return {string} The safe name ("untitled" when empty).
+ */
 function safeName_(s) {
   return String(s).replace(/[\\/:*?"<>|#]+/g, '-').trim().slice(0, 80) || 'untitled';
 }
 
-/** Avoids duplicate file names inside the ZIP. */
+/**
+ * Avoids duplicate PDF names inside one job by adding " (2)", " (3)"…
+ * @private
+ * @param {string} base File name without ".pdf".
+ * @param {GoogleAppsScript.Base.Blob[]} existingBlobs PDFs already named.
+ * @return {string} A unique name without ".pdf".
+ */
 function uniqueName_(base, existingBlobs) {
   const taken = {};
   existingBlobs.forEach(b => { taken[b.getName()] = true; });

@@ -1,5 +1,5 @@
 /**
- * DEVELOPER SETTINGS for Invoice PDF Generator.
+ * @fileoverview DEVELOPER SETTINGS for Morph - Invoice PDF Generator.
  *
  * Edit the values below, save, then publish a new version so users get them:
  *   Deploy → Manage deployments → ✏️ Edit → Version: New version → Deploy
@@ -10,6 +10,22 @@
  *
  * English and French invoices use the SAME company and bank details; only the
  * labels around them change with the invoice language.
+ */
+
+/**
+ * Developer settings, read by the server code through cfg_().
+ * @const {Object}
+ * @property {string} LOGO_DRIVE_FILE_ID Drive file id of the PNG logo (top-left on every invoice); '' = no logo.
+ * @property {{address: string[], phone: string}} COMPANY Internal address lines (the first is the business name) and phone.
+ * @property {{gstHst: string, qst: string, quebecPermit: string}} GOVERNMENT_NUMBERS Registration numbers; '' hides a line.
+ * @property {{address: string[], bankId: string, transit: string, account: string}} BANK Bank details for the invoice footer.
+ * @property {{en: {remittance: string, disclosure: string}, fr: {remittance: string, disclosure: string}}} FOOTER_TEXT
+ *   The footer's two sentences per invoice language; a blank French value uses the English one.
+ * @property {boolean} FOOTER_AT_PAGE_BOTTOM true = footer at the bottom of the last page; false = right after the totals.
+ * @property {string} ACCENT_COLOR "#rrggbb" colour of invoice headings, spreadsheet headers and email buttons.
+ * @property {string} EMAIL_SENDER_NAME Sender name on every email.
+ * @property {string} DEV_EMAIL Where unexpected errors are emailed.
+ * @property {string[]} TAX_ADMINS Emails allowed to change tax rates (the script property TAX_ADMINS adds more).
  */
 const CONFIG = {
   // Logo shown top-left on every invoice: the Google Drive file ID of a PNG.
@@ -74,7 +90,7 @@ const CONFIG = {
 
   // Emails are sent from the signed-in user's own Google account (Apps Script
   // can't send from another address). This is the sender name people see.
-  EMAIL_SENDER_NAME: 'Invoice PDF Generator (no reply)',
+  EMAIL_SENDER_NAME: 'Morph - Invoice PDF Generator (no reply)',
 
   // Unexpected errors (not user mistakes) are emailed here, at most once per
   // 10 minutes for the same error and user.
@@ -87,11 +103,14 @@ const CONFIG = {
 };
 
 /**
- * Run metrics hand-off (one row per client per Generate run):
- *   rows = [[runId, user, clientId, invoiceCount, runTimeMs], ...]
- * The rows are always written to the logs. To send them to BigQuery through
- * your existing library, add the library (Editor → Libraries +) and replace the
- * marked line below with its call. Errors here never fail a run.
+ * Run metrics hand-off: one row per client per Generate run. The rows are always
+ * written to the logs. To send them to BigQuery through your existing library, add
+ * the library (Editor → Libraries +) and replace the marked line below with its call.
+ * Errors here never fail a run.
+ * @private
+ * @param {Array<Array<(string|number)>>} rows Rows of [runId, user, clientId, invoiceCount, runTimeMs].
+ * @example
+ * // [['3f9c2a1b7d', 'ana@company.com', 'C-1001', 2, 5310]]
  */
 function sendRunMetrics_(rows) {
   if (!rows || !rows.length) return;

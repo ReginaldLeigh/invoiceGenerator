@@ -96,7 +96,7 @@
 </head>
 <body>
 <main>
-  <h1>Invoice PDF Generator</h1>
+  <h1>Morph - Invoice PDF Generator</h1>
   <p class="sub">Upload your invoice data, tell us which columns hold what, and get invoice PDFs in English or French in your Google Drive. Each job gets a Drive folder with the PDF and an editable spreadsheet, and we'll email you the link.</p>
 
   <!-- Rebuild an existing job from its (edited) spreadsheet -->
@@ -280,6 +280,11 @@
 </main>
 
 <script>
+  /**
+   * @fileoverview Web page script for Morph - Invoice PDF Generator: the upload and
+   * preview, column mapping, presets, Clear form, Generate and Rebuild, the results
+   * panel and the Tax rates card. It talks to the server (Code.gs) with google.script.run.
+   */
   var REBUILD_ID = '<?= rebuildId ?>';   // set when opened from a "Rebuild PDF" link
   var FIELDS = [];
   var fileData = null;          // { name, base64 }
@@ -351,7 +356,10 @@
     .withFailureHandler(function (err) { showError(err); showError(err, 'rebuildStatus'); })
     .getConfig();
 
-  /** Files and the email always go to the signed-in account; there is no recipient box. */
+  /**
+   * Shows who the link will be emailed to. Files and the email always go to the
+   * signed-in account, so there is no recipient box.
+   */
   function showEmailLine() {
     var el = document.getElementById('emailLine');
     el.innerHTML = userEmail
@@ -359,6 +367,11 @@
       : 'The link will be emailed to your Google account.';
   }
 
+  /**
+   * Builds the column-letter boxes (from the server's field list) and the 10 extra-detail
+   * rows, and wires up their events: letters are cleaned as typed, the preview highlights
+   * mapped columns, and labels are filled in from the headers.
+   */
   function renderMappingFields() {
     var GROUP_TITLES = { Invoice: 'Invoice', Client: 'Client (bill to)', Work: 'Work / line items', Other: 'Other' };
     var lastGroup = null;
@@ -395,7 +408,10 @@
     });
   }
 
-  /** The whole form as { mapping, options }: the shape sent to the server and stored in presets. */
+  /**
+   * Reads the whole form: the shape sent to the server and stored in presets.
+   * @return {FormState} Column letters, details, grouping and options.
+   */
   function collectFormState() {
     var mapping = {};
     FIELDS.forEach(function (f) { mapping[f.key] = document.getElementById('map_' + f.key).value.trim().toUpperCase(); });
@@ -423,9 +439,11 @@
   }
 
   /**
-   * Fills in the form from a saved state. Every field is set: anything the
-   * state leaves out goes back to the blank form's value, so applying a
-   * preset never leaves column letters behind from a previous one.
+   * Fills in the form from a saved state. Every field is set: anything the state leaves
+   * out goes back to the blank form's value, so applying a preset never leaves column
+   * letters behind from a previous one. Labels that come with a column are kept exactly
+   * (blank ones included); the rest are filled in from the file's headers again.
+   * @param {FormState} state The state to show (a preset, last-used settings or the blank form).
    */
   function applyFormState(state) {
     var d = FORM_DEFAULTS || { mapping: { details: [] }, options: {} };
@@ -473,6 +491,11 @@
   var presetSelect = document.getElementById('presetSelect');
   var deleteTimer = null;
 
+  /**
+   * Redraws the preset menu, keeping the active preset selected if it still exists.
+   * @param {Array<{name: string, updated: string, isDefault: boolean}>} list The presets.
+   * @param {string} defName Name of the default preset ('' = none).
+   */
   function renderPresetList(list, defName) {
     presets = list || [];
     defaultName = defName || '';
@@ -486,11 +509,19 @@
     updatePresetButtons();
   }
 
+  /**
+   * The preset chosen in the menu.
+   * @return {?{name: string, updated: string, isDefault: boolean}} The preset, or null for "No preset".
+   */
   function selectedPreset() {
     var name = presetSelect.value;
     return presets.filter(function (p) { return p.name === name; })[0] || null;
   }
 
+  /**
+   * Enables or disables the preset buttons for the current choice, and sets the
+   * "Make default" / "Remove as default" text.
+   */
   function updatePresetButtons() {
     var p = selectedPreset();
     var off = !p || busy || presetBusy;
@@ -502,6 +533,11 @@
     disarmDelete();
   }
 
+  /**
+   * Fills in the form from a preset and makes it the active preset (for "Update preset"
+   * and the header check).
+   * @param {Preset} preset The preset.
+   */
   function applyPreset(preset) {
     applyFormState(preset);
     activePreset = preset;
@@ -562,6 +598,12 @@
     });
   });
 
+  /**
+   * Saves the form as a preset, with the loaded file's headers, then refreshes the menu.
+   * @param {string} name Preset name.
+   * @param {boolean} makeDefault Also make it the default.
+   * @param {function(Object)} done Called with the server's reply when saved.
+   */
   function savePresetNamed(name, makeDefault, done) {
     var state = collectFormState();
     presetCall('savePreset', {
@@ -607,6 +649,9 @@
       setStatus('Deleted preset “' + p.name + '”. The form still shows its values.', 'presetStatus', 'ok');
     });
   });
+  /**
+   * Puts the preset Delete button back to its first-click state.
+   */
   function disarmDelete() {
     clearTimeout(deleteTimer);
     var btn = document.getElementById('presetDelete');
@@ -614,6 +659,12 @@
     btn.textContent = 'Delete';
   }
 
+  /**
+   * Calls a preset function on the server with the preset buttons disabled; errors show next to the presets.
+   * @param {string} fn Server function name, e.g. "getPreset".
+   * @param {*} arg Its argument.
+   * @param {function(*)} onOk Called with the reply.
+   */
   function presetCall(fn, arg, onOk) {
     setPresetBusy(true);
     google.script.run
@@ -621,6 +672,10 @@
       .withFailureHandler(function (err) { setPresetBusy(false); showError(err, 'presetStatus'); })[fn](arg);
   }
   var presetBusy = false;
+  /**
+   * Disables the preset controls while a preset call runs.
+   * @param {boolean} on True while busy.
+   */
   function setPresetBusy(on) {
     presetBusy = on;
     ['presetSave', 'presetNew'].forEach(function (id) { document.getElementById(id).disabled = on; });
@@ -632,6 +687,10 @@
   // Note when the form no longer matches the preset that filled it in.
   newJob.addEventListener('input', markDirty);
   newJob.addEventListener('change', markDirty);
+  /**
+   * Notes that the form was changed after a preset filled it in, and suggests "Update preset".
+   * @param {Event} e The input or change event.
+   */
   function markDirty(e) {
     if (!activePreset || presetDirty) return;
     if (e.target.closest('#presetCard') || e.target.id === 'file' || e.target.id === 'pinPreview') return;
@@ -639,7 +698,11 @@
     setStatus('You changed the form after choosing “' + activePreset.name + '”. Click Update preset to keep these changes for next time.', 'presetStatus');
   }
 
-  /** Header text of each mapped column in the uploaded file, e.g. { A: 'Invoice #' }. */
+  /**
+   * Header text of each mapped column in the loaded file, read from the file's whole header row.
+   * @param {FormState} state The form.
+   * @return {Object<string, string>} Header text by column letter, e.g. {A: 'Invoice #'}.
+   */
   function currentHeaders(state) {
     var out = {};
     if (!document.getElementById('hasHeader').checked || !previewHeader.length) return out;
@@ -654,7 +717,10 @@
     return out;
   }
 
-  /** Compares the uploaded file's headers with the ones the active preset remembers. */
+  /**
+   * Compares the loaded file's headers with the ones the active preset remembers, and
+   * shows a match or a list of the columns that differ.
+   */
   function checkHeaders() {
     var box = document.getElementById('headerCheck');
     var expected = activePreset && activePreset.headers;
@@ -694,6 +760,11 @@
   ['dragleave','drop'].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); }); });
   drop.addEventListener('drop', function (e) { if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]); });
 
+  /**
+   * Reads a chosen or dropped file and asks the server for its preview. Choosing the same
+   * file name again reloads it (the status says "Reloaded"). A newer choice cancels an older one.
+   * @param {File} file The file.
+   */
   function loadFile(file) {
     if (busy) { showError('Please wait for the current job to finish.'); return; }
     if (!/\.(csv|xlsx|xls)$/i.test(file.name)) { showError('Please choose a .csv or .xlsx file.'); return; }
@@ -726,7 +797,10 @@
     reader.readAsDataURL(file);
   }
 
-  /** Unloads the file and its preview. Column letters, labels and options stay as they are. */
+  /**
+   * Unloads the file and its preview. Column letters, typed labels and options stay;
+   * labels filled in from the old file's headers are cleared.
+   */
   function removeFile() {
     if (busy) return;
     previewToken++;                // ignore a preview that's still on its way
@@ -746,7 +820,10 @@
   document.getElementById('removeFile').addEventListener('click', removeFile);
   document.getElementById('reloadFile').addEventListener('click', function () { if (!busy) fileInput.click(); });
 
-  /** Each label box with its column box: the 10 extra details, then the group heading. */
+  /**
+   * Each label box with its column box: the 10 extra details, then the group heading.
+   * @return {Array<{col: HTMLInputElement, label: HTMLInputElement}>} The pairs.
+   */
   function labelPairs() {
     var out = [];
     for (var n = 0; n < MAX_DETAILS; n++) {
@@ -757,9 +834,9 @@
   }
 
   /**
-   * Puts the column's header into each label box as ordinary, editable text.
-   * Boxes the user has typed in or cleared (or that a preset filled) are left alone.
-   * Runs when a column letter changes, when a file is loaded and when the header option changes.
+   * Puts the column's header into each label box as ordinary, editable text. Boxes the
+   * user has typed in or cleared (or that a preset filled) are left alone. Runs when a
+   * column letter changes, when a file is loaded and when the header option changes.
    */
   function fillLabels() {
     var useHeader = document.getElementById('hasHeader').checked;
@@ -770,18 +847,38 @@
       p.label.value = head ? String(head).trim().slice(0, 60) : '';
     });
   }
-  /** 0 → "A", 53 → "BB" */
+  /**
+   * A 0-based column index to letters.
+   * @param {number} i The index.
+   * @return {string} The letters.
+   * @example
+   * colLetter(0)  // 'A'
+   * colLetter(59) // 'BH' 
+   */
   function colLetter(i) {
     var s = '';
     for (var n = i + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
     return s;
   }
+  /**
+   * Column letters to a 0-based index.
+   * @param {string} letters Upper-case letters.
+   * @return {number} The index.
+   * @example
+   * colIndex('BH') // 59
+   */
   function colIndex(letters) {
     var x = 0;
     for (var i = 0; i < letters.length; i++) x = x * 26 + (letters.charCodeAt(i) - 64);
     return x - 1;
   }
 
+  /**
+   * Shows the preview table and the note under it ("Showing 6 of 15 rows · columns A–BH"),
+   * keeps the file's whole header row for labels and the header check, and makes each
+   * column letter clickable.
+   * @param {PreviewResult} p The server's preview.
+   */
   function renderPreview(p) {
     previewHeader = p.header || p.rows[0] || [];
     var t = document.getElementById('preview');
@@ -822,6 +919,9 @@
     checkHeaders();
   }
 
+  /**
+   * Highlights the preview columns that are entered in any box.
+   */
   function highlightMapped() {
     var used = {};
     document.querySelectorAll('input.col').forEach(function (i) { if (i.value) used[i.value] = true; });
@@ -868,6 +968,10 @@
       .generateInvoices(request);
   });
 
+  /**
+   * Shows the results panel: links, the invoice list, warnings, skipped rows and notes.
+   * @param {JobResult} res The server's reply to Generate or Rebuild.
+   */
   function renderResults(res) {
     var el = document.getElementById('results');
     var rows = res.invoices.map(function (inv) {
@@ -937,6 +1041,9 @@
     setTimeout(function () { setStatus('', 'clearStatus'); }, 6000);
     document.getElementById('mappingForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+  /**
+   * Puts the Clear form button back to its first-click state.
+   */
   function disarmClear() {
     clearTimer && clearTimeout(clearTimer);
     var btn = document.getElementById('clearForm');
@@ -964,7 +1071,16 @@
   // ---------- Tax rates ----------
   var taxState = null;
   var taxResetTimer = null;
+  /**
+   * A rate for display, up to 3 decimals.
+   * @param {(number|string)} v The rate.
+   * @return {string} e.g. "9.975".
+   */
   function fmtRate(v) { return String(Math.round(Number(v) * 1000) / 1000); }
+  /**
+   * Draws the Tax rates card: editable boxes for admins, plain text for everyone else.
+   * @param {TaxState} t The rates.
+   */
   function renderTax(t) {
     if (!t) return;
     taxState = t;
@@ -986,6 +1102,12 @@
       : 'Using the starting rates.';
     disarmTaxReset();
   }
+  /**
+   * Calls a tax-rate function on the server with the card's buttons disabled.
+   * @param {string} fn "saveTaxRates" or "resetTaxRates".
+   * @param {*} arg Its argument.
+   * @param {string} okMsg Message shown when it succeeds.
+   */
   function taxCall(fn, arg, okMsg) {
     var btns = ['taxSave', 'taxReset'].map(function (id) { return document.getElementById(id); });
     btns.forEach(function (b) { b.disabled = true; });
@@ -1020,6 +1142,9 @@
     disarmTaxReset();
     taxCall('resetTaxRates', null, 'Starting rates restored.');
   });
+  /**
+   * Puts the "Reset to starting rates" button back to its first-click state.
+   */
   function disarmTaxReset() {
     clearTimeout(taxResetTimer);
     var btn = document.getElementById('taxReset');
@@ -1028,7 +1153,11 @@
   }
 
   // ---------- UI helpers ----------
-  /** mode: 'generate' (default) or 'rebuild', which decides which button shows the spinner. */
+  /**
+   * Disables the buttons while a job runs and shows a spinner on the button that started it.
+   * @param {boolean} on True while busy.
+   * @param {string} [mode] "rebuild" puts the spinner on the Rebuild button; otherwise on Generate.
+   */
   function setBusy(on, mode) {
     busy = on;
     document.getElementById('generate').disabled = on;
@@ -1042,15 +1171,30 @@
     document.getElementById('rebuildLabel').innerHTML = rebuilding ? '<span class="spinner"></span>Rebuilding…' : 'Rebuild PDF';
     updatePresetButtons();
   }
-  /** Status messages go next to the button that started the action ('status', 'rebuildStatus' or 'presetStatus'). */
+  /**
+   * Shows a status message next to the button that started the action.
+   * @param {string} msg The message ('' clears it).
+   * @param {string} [where] Element id: "status" (default), "rebuildStatus", "presetStatus", "fileStatus", "clearStatus" or "taxStatus".
+   * @param {string} [kind] "ok" or "err" for colour.
+   */
   function setStatus(msg, where, kind) {
     var s = document.getElementById(where || 'status');
     s.className = 'status' + (kind ? ' ' + kind : '');
     s.textContent = msg;
   }
+  /**
+   * Shows an error message.
+   * @param {(Error|string)} err The error.
+   * @param {string} [where] Element id (see {@link setStatus}).
+   */
   function showError(err, where) {
     setStatus((err && err.message) ? err.message : String(err), where, 'err');
   }
+  /**
+   * Escapes text for HTML.
+   * @param {*} s The text.
+   * @return {string} Safe HTML text.
+   */
   function esc(s) {
     return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }

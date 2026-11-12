@@ -1,4 +1,4 @@
-# Invoice PDF Generator (Google Apps Script)
+# Morph - Invoice PDF Generator (Google Apps Script)
 
 A web app that turns a database export (CSV or Excel, one record per row) into Canadian client invoice PDFs in **English or French**. Each job gets its own Google Drive folder containing:
 
@@ -7,6 +7,8 @@ A web app that turns a database export (CSV or Excel, one record per row) into C
 - **an untouched copy of the uploaded file** (`Original data - <file name>`), for later checking.
 
 A link is emailed (in English) to the person who submitted the form.
+
+**Only the invoice text follows the language choice.** Everything else (the web page, emails, the editable spreadsheet, file and folder names) is English for every job.
 
 ## How it works
 
@@ -24,15 +26,28 @@ A link is emailed (in English) to the person who submitted the form.
    - **Labels:** when you enter a column letter, the label box is filled in with that column's header as ordinary text you can edit. **Leave a label empty to print only the value** (`Studio A`, `P-1001`). A label you've typed in or cleared is never changed automatically, even after a new upload; a preset's labels (blank ones included) are kept exactly; Clear form starts the auto-fill over.
    - **File settings:** "The first row is a header row", the date order (auto / MM/DD / DD/MM) and the number style (auto / `1,234.56` / `1 234,56`).
 4. **Output and delivery.**
-   - **Language:** English or Français. Every word on the invoice follows this choice.
+   - **Language:** English or Français. Every word on the invoice follows this choice; nothing else does.
    - **Combine each candidate's rows into one line item:** adds up the units and shows the date range (`11/03/2026 – 11/05/2026`). Rows with a different line type, rate, work order, purchase order or group stay separate.
    - **PDF output:** one PDF per invoice plus a ZIP (default), or a single PDF with every invoice.
    - **Delivery:** always the signed-in Google account. There's no recipient box, and nothing is shared with anyone else.
-5. **Generate.** Files go to `My Drive / Invoice PDFs / <timestamp> - <file name> (<job id>)/`. The results page and the email link to the PDF(s), the spreadsheet, the folder, the original data file and the rebuild page. Skipped rows and notes are listed on the results page.
+5. **Generate.** Files go to `My Drive / Morph - Invoice PDFs / <timestamp> - <file name> (<job id>)/`. The results page and the email link to the PDF(s), the spreadsheet, the folder, the original data file and the rebuild page. Skipped rows and notes are listed on the results page.
+
+### File names
+File names are always English, whatever the invoice language. Characters Drive can't use become `-`.
+
+| File | Name |
+|---|---|
+| One PDF per invoice | `<invoice #> - <client>.pdf`, e.g. `INV-1001 - Maple Productions.pdf` (just `INV-1001.pdf` with no client name) |
+| ZIP of the PDFs, all for one client | `All invoices - <client>.zip` |
+| ZIP of the PDFs, several clients | `All invoices.zip` |
+| Single PDF holding one invoice | `<invoice #> - <client>.pdf` |
+| Single PDF holding several invoices | `All invoices - <uploaded file name>.pdf` |
+| Editable spreadsheet | `Invoices - <uploaded file name> (editable)` |
+| Copy of the upload | `Original data - <uploaded file name>` |
 
 ### Emails
 - **Always in English**, whatever the invoice language.
-- Sent from the signed-in user's own Google account, shown as **"Invoice PDF Generator (no reply)"** (`EMAIL_SENDER_NAME` in `Config.gs`), with "This is an automated message. Please don't reply." at the end. Apps Script can only send from the account running the app, so a separate no-reply address isn't possible. There is no Reply-To, so any reply goes to the user who generated the invoices.
+- Sent from the signed-in user's own Google account, shown as **"Morph - Invoice PDF Generator (no reply)"** (`EMAIL_SENDER_NAME` in `Config.gs`), with "This is an automated message. Please don't reply." at the end. Apps Script can only send from the account running the app, so a separate no-reply address isn't possible. There is no Reply-To, so any reply goes to the user who generated the invoices.
 
 ## The invoice
 
@@ -109,12 +124,12 @@ A preset saves the whole form: column letters, grouping, extra details and their
 
 ## Editing an invoice after it's generated
 
-The job folder contains `Invoices - <file> (editable)` (`Factures - <file> (modifiable)` in French):
+The job folder contains `Invoices - <file> (editable)`. The spreadsheet is **in English for every job**; for French jobs, only the Tax code dropdown lists the French codes (TPS, TVH, NETVH, ONTVH, IPE, QST).
 
 | Tab | What's in it |
 |---|---|
-| **Invoices** / **Factures** | One row per record: A invoice #, B client #, C invoice date, D payment due date, E client, F ATTN, G–J address 1–4, K city, L state/province, M postal code, N country, O candidate/role, P work order, Q purchase order, R work date, S line type, T units, U rate, V *amount (calculated)*, W tax code (dropdown), **X group** (the header is the group heading label; blank = no groups), **Y–AH extra details** (the header is the label). A header of `(no label)` (French: `(sans étiquette)`) keeps the group or detail but prints only its value; type a label over it to add one. Invoice details and the address are read from the **first row** of each invoice. Dates are stored as `yyyy-mm-dd`. |
-| **Settings** / **Paramètres** | Language (`en`/`fr`), PDF output (`combined`/`separate`), combine lines (`yes`/`no`), and the **Rebuild PDF** link. |
+| **Invoices** | One row per record: A invoice #, B client #, C invoice date, D payment due date, E client, F ATTN, G–J address 1–4, K city, L state/province, M postal code, N country, O candidate/role, P work order, Q purchase order, R work date, S line type, T units, U rate, V *amount (calculated)*, W tax code (dropdown), **X group** (the header is the group heading label; blank = no groups), **Y–AH extra details** (the header is the label). A header of `(no label)` keeps the group or detail but prints only its value; type a label over it to add one. Invoice details and the address are read from the **first row** of each invoice. Dates are stored as `yyyy-mm-dd`; numbers typed as text are read the English way (`1,234.56`). |
+| **Settings** | Language (`en`/`fr`), PDF output (`combined`/`separate`), combine lines (`yes`/`no`), and the **Rebuild PDF** link. |
 | `_meta` (hidden) | Records the job's files and tax rates. Don't edit it. |
 
 **To apply your edits:** click **Rebuild PDF** (on the Settings tab, in the email, or on the results page), then **Rebuild PDF** again in the web app.
@@ -167,6 +182,8 @@ Every call from the page is a **run** with its own **run id** (for Generate, the
 
 Update deployments in place (*Manage deployments → Edit → New version*) so the URL, and the Rebuild links in existing spreadsheets, keep working.
 
+**Name the project and deployment "Morph - Invoice PDF Generator".** These names are set in the Apps Script editor, not in the code: rename the project by clicking its title at the top of the editor, and give the deployment that description under *Deploy → Manage deployments → Edit*. The page title, emails and Drive folder already use the name.
+
 With [clasp](https://github.com/google/clasp): `clasp create --type webapp`, then `clasp push`. The `.claspignore` pushes only `Code.gs`, `Config.gs`, `Index.html` and `appsscript.json`.
 
 ## Developer setup: logo, company details, footer, tax admins
@@ -177,7 +194,7 @@ All developer settings are in **Config.gs** (`CONFIG`). It ships with **stand-in
 - placeholder registration numbers;
 - the JP Morgan Trust bank details and the FrontStreet remittance line and disclosure;
 - accent colour dark blue `#1f4e79`, footer at the bottom of the last page;
-- sender name "Invoice PDF Generator (no reply)" and `DEV_EMAIL` reggie.leigh@gmail.com;
+- sender name "Morph - Invoice PDF Generator (no reply)" and `DEV_EMAIL` reggie.leigh@gmail.com;
 - no logo and no tax admins.
 
 **English and French invoices use the same company and bank details**; only the labels change (e.g. "Bank ID" / "N° d'institution"). The remittance line and the disclosure are sentences, so they have an English and a French version.
@@ -268,9 +285,19 @@ Samples 1–7 and 10 are single-line database-style records sharing **one column
 - pagination, presets and branding fallbacks;
 - the original data copy and rebuilding with the job's own rates.
 
+- the English spreadsheet and file names for French jobs, the Morph names, and that every function is documented.
+
 `node tests/run.js --html` also writes each sample's invoice HTML to `tests/out/` to open in a browser.
 
 Google's HTML-to-PDF rendering itself can only be checked in a real deployment. After deploying, generate each sample and check that page breaks fall between rows, that "Page X of Y" is in the top-right corner, and that the footer sits at the bottom of the last page (if not, set `FOOTER_AT_PAGE_BOTTOM: false`).
+
+## Code documentation
+
+Every function in `Code.gs`, `Config.gs` and the page script in `Index.html` has a JSDoc comment (the JavaScript version of Javadoc): a summary, `@param {Type} name`, `@return {Type}`, `@throws`, `@example` where useful, and `@private` for internal helpers. The shapes passed around the app (`Invoice`, `Line`, `FormState`, `JobResult`, …) are `@typedef`s at the top of `Code.gs`.
+
+- **Reference page:** `docs/api/index.html`, one searchable page that works offline. Rebuild it after changing a comment with `node tools/build-docs.js`. It needs the `typescript` package (`npm install --no-save typescript`, or a global install), which reads the code and the comments.
+- **Check only:** `node tools/build-docs.js --check` lists any function with no comment, a missing or extra `@param`, or no `@return` when it returns a value. `tests/run.js` runs the same check.
+- **Standard JSDoc:** the comments use standard tags, so `npx jsdoc -c jsdoc.json` also builds the server reference (in `docs/jsdoc/`, not committed).
 
 ## Limits
 - Apps Script stops a run after **6 minutes**. Each PDF takes about a second, so one run handles roughly 250–300 invoices. Split larger files.

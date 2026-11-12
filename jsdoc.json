@@ -1,0 +1,13 @@
+{
+  "source": {
+    "include": ["Code.gs", "Config.gs"],
+    "includePattern": ".+\\.(gs|js)$"
+  },
+  "plugins": ["plugins/markdown"],
+  "opts": {
+    "destination": "docs/jsdoc",
+    "recurse": false,
+    "private": true
+  },
+  "tags": { "allowUnknownTags": true }
+}
