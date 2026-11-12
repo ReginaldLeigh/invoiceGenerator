@@ -57,7 +57,7 @@ Portrait (Letter). Every page shows "Page X of Y" in the **top-right corner** (F
   - Logo top-left, with Invoice #, Client #, Invoice Date and Payment Due Date top-right.
   - Under the logo: the client name (bold, accent colour), `ATTN:` line, Address 1–4, "City, ST  Postal" and Country.
   - To the right: the company block (business name in the accent colour, address, `T. ` phone, government registration numbers).
-  - Then **PRIVATE & CONFIDENTIAL** (French: **PRIVÉE ET CONFIDENTIELLE**).
+  - Then **PRIVATE & CONFIDENTIAL** (French: **PRIVÉE & CONFIDENTIELLE**).
 - **Later pages:** a condensed header (small logo, the four invoice fields, client name).
 - **Body:** Candidate | Work Order | Purchase Order | Period | Type | Unit(s) | Rate | Amount (French: Candidat | Référence | Bon de commande | Période | Type | Unité(s) | Taux | Montant). The column headings repeat on every page. Group headings are tinted in the accent colour and repeat with "(continued)" / "(suite)" when a group runs onto the next page.
 - **Last page only:**

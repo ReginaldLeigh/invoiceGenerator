@@ -515,7 +515,7 @@ const I18N = {
     locale: 'fr',
     headerLabels: ['N° de facture', 'N° de client', 'Date de facturation', 'Paiement dû au plus tard'],
     attn: 'ATTN:',
-    confidential: 'PRIVÉE ET CONFIDENTIELLE', // agrees with « facture » (feminine)
+    confidential: 'PRIVÉE & CONFIDENTIELLE', // agrees with « facture » (feminine)
     columns: ['Candidat', 'Référence', 'Bon de commande', 'Période', 'Type', 'Unité(s)', 'Taux', 'Montant'],
     summaryTitle: 'Sommaire des unités',
     summaryCols: ['Type', 'Unité(s)'],
@@ -526,7 +526,7 @@ const I18N = {
     taxCodes: ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'],
     gov: [['gstHst', 'TVH/TPS # '], ['qst', 'TVQ # '], ['quebecPermit', 'Permis QC ']],
     phonePrefix: 'T. ',
-    footerLabels: { paymentTitle: 'Paiement par TEF', bankId: 'N° d\'institution bancaire', transit: 'N° de transit de la succursale bancaire', account: 'N° de compte' },
+    footerLabels: { paymentTitle: 'Paiement par TEF', bankId: 'N° d\'institution bancaire', transit: 'N° de transit succursale bancaire', account: 'N° de compte' },
     unitsTotal: 'Total',
     continued: '(suite)',
     page: (n, of) => 'Page ' + n + ' de ' + of,

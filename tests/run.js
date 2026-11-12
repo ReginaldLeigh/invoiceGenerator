@@ -127,10 +127,10 @@ test('French PDF HTML: French labels, English-style numbers, Permis QC, French f
   const res = parse('sample-2-quebec-fr.csv', MAP, { language: 'fr', combineEmployees: true });
   const h = html(res, 'FAC-2001');
   ['N° de facture', 'N° de client', 'Date de facturation', 'Paiement dû au plus tard', '11/14/2026',
-   'PRIVÉE ET CONFIDENTIELLE', 'Candidat', 'Référence', 'Bon de commande', 'Période', 'Unité(s)', 'Taux', 'Montant',
+   'PRIVÉE &amp; CONFIDENTIELLE', 'Candidat', 'Référence', 'Bon de commande', 'Période', 'Unité(s)', 'Taux', 'Montant',
    'ATTN: Comptes fournisseurs', 'Sommaire des unités', 'Sous-total', 'TPS (5%)', 'TVQ (9.975%)', '$77.80', '$155.21',
    'Total (CAD)', '$1,789.01', '$1,050.00', 'T. 725-555-6458', 'TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001',
-   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution bancaire:', 'N° de transit de la succursale bancaire:', 'N° de compte:',
+   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution bancaire:', 'N° de transit succursale bancaire:', 'N° de compte:',
    '1234 Alexander Street', 'Saint-Laurent QC H4R 1Y8', 'ABC Store', 'Page 1 de 1'].forEach(s => has(h, s));
   ['PRIVATE', 'HST/GST', 'Invoice Date', '1 050,00', '9,975', 'rue Alexander', 'Bank ID'].forEach(s => hasNot(h, s));
 });
@@ -487,7 +487,7 @@ test('same company and bank details in both languages; only labels change; Frenc
   assert.deepStrictEqual(plain(fr.company.gov), ['TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001', 'Permis QC 000000']);
   assert.deepStrictEqual(plain(en.footer.bankAddress), plain(fr.footer.bankAddress));
   assert.deepStrictEqual(plain(en.footer.bankDetails), [['Bank ID', '007'], ['Bank Transit', '12345'], ['Account #', '12312312323']]);
-  assert.deepStrictEqual(plain(fr.footer.bankDetails), [["N° d'institution bancaire", '007'], ['N° de transit de la succursale bancaire', '12345'], ['N° de compte', '12312312323']]);
+  assert.deepStrictEqual(plain(fr.footer.bankDetails), [["N° d'institution bancaire", '007'], ['N° de transit succursale bancaire', '12345'], ['N° de compte', '12312312323']]);
   assert.strictEqual(fr.footer.paymentTitle, 'Paiement par TEF');
   const savedFr = JSON.stringify(C.FOOTER_TEXT.fr);
   C.FOOTER_TEXT.fr.remittance = '';
@@ -835,7 +835,7 @@ test('French job: the spreadsheet is English (tax dropdown stays French); the in
   const dv = items.validations['1,22'];
   assert.deepStrictEqual(plain(dv.list), ['EXEMPT', 'TPS', 'TVH', 'NETVH', 'ONTVH', 'IPE', 'QST'], 'French tax dropdown kept');
   const pdf = pdfHtml(res)[0];
-  has(pdf, 'N° de facture'); has(pdf, 'Sous-total'); has(pdf, 'PRIVÉE ET CONFIDENTIELLE');
+  has(pdf, 'N° de facture'); has(pdf, 'Sous-total'); has(pdf, 'PRIVÉE &amp; CONFIDENTIELLE');
   const names = folderOf(res).files().filter(f => !f.trashed).map(f => f.getName());
   assert.ok(names.indexOf('INV-3001 - Maple Productions.pdf') !== -1, names.join(' | '));
   hasNot(names.join('|'), 'Facture');
