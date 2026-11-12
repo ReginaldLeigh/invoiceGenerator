@@ -31,9 +31,10 @@ const MAP = {
   invoiceNumber: 'A', clientNumber: 'B', invoiceDate: 'C', dueDate: 'D', customerName: 'E', attention: 'F',
   address1: 'G', address2: 'H', address3: 'I', address4: 'J', city: 'K', province: 'L', postalCode: 'M', country: 'N',
   candidate: 'O', workOrder: 'P', purchaseOrder: 'Q', workDate: 'R', lineType: 'S', units: 'T', unitPrice: 'U',
-  taxCode: 'V', details: [{ col: 'X' }, { col: 'Y' }], groupBy: { col: '' },
+  taxCode: 'V', details: [{ col: 'X', label: 'Location' }, { col: 'Y', label: 'Shift' }], groupBy: { col: '' },
 };
-const withGroup = (label) => Object.assign({}, MAP, { groupBy: { col: 'W', label: label || '' } });
+// Labels as the form sends them: filled in from the header, unless the user changed or cleared them.
+const withGroup = (label) => Object.assign({}, MAP, { groupBy: { col: 'W', label: label === undefined ? 'Project Number' : label } });
 const OPTS = { hasHeader: true };
 
 function parse(file, mapping, options) {
@@ -139,7 +140,7 @@ console.log('Sample 3 — grouping by Project Number');
 test('groups in first-appearance order, ungrouped lines first without a heading', () => {
   const res = parse('sample-3-projects.csv', withGroup(), { combineEmployees: true });
   const m = inv(res, 'INV-3001');
-  assert.strictEqual(m.groupLabel, 'Project Number', 'label defaults to the column header');
+  assert.strictEqual(m.groupLabel, 'Project Number', 'label as sent by the form');
   assert.deepStrictEqual(plain(m.groups.map(g => g.value)), ['', 'P-1001', 'P-1002']);
   assert.strictEqual(m.groups[0].lines[0].candidate, 'Equipment fee');
   const ana = m.lines.filter(l => l.candidate === 'Ana Silva');
@@ -508,11 +509,11 @@ const logsFor = runId => world.logs.filter(l => l.entry.runId === runId).map(l =
 const LAYOUT_B = { invoiceNumber: 'F', clientNumber: 'L', invoiceDate: 'N', dueDate: 'O', customerName: 'A', attention: 'B',
   address1: 'C', address2: 'D', address3: 'E', address4: 'G', city: 'H', province: 'I', postalCode: 'J', country: 'K',
   candidate: 'P', unitPrice: 'Q', units: 'R', lineType: 'S', workOrder: 'T', purchaseOrder: 'U', workDate: 'V', taxCode: 'X',
-  groupBy: { col: 'Y' }, details: [{ col: 'Z' }, { col: 'AA' }] };
+  groupBy: { col: 'Y', label: 'Project' }, details: [{ col: 'Z', label: 'Location' }, { col: 'AA', label: 'Shift' }] };
 const LAYOUT_C = { invoiceNumber: 'A', invoiceDate: 'B', dueDate: 'C', clientNumber: 'D', lineType: 'E', customerName: 'F',
   candidate: 'G', units: 'H', unitPrice: 'I', taxCode: 'J', attention: 'K', address1: 'L', address2: 'M', address3: 'N',
   address4: 'O', city: 'P', province: 'Q', postalCode: 'R', country: 'S', workOrder: 'T', purchaseOrder: 'U', workDate: 'V',
-  groupBy: { col: 'W' }, details: [{ col: 'X' }, { col: 'Y' }] };
+  groupBy: { col: 'W', label: 'Projet' }, details: [{ col: 'X', label: 'Location' }, { col: 'Y', label: 'Shift' }] };
 
 test('defaults: one PDF per invoice and English', () => {
   assert.strictEqual(gas.normalizeLayoutOptions_({}).outputMode, 'separate');
@@ -715,18 +716,28 @@ test('different column layouts (samples 8 and 9) give the same invoices as the s
 
 console.log('Version 3.2 — preview width');
 
-test('preview shows up to column BB and reports the total column count', () => {
+test('preview shows every column up to ZZ and the whole header row', () => {
   const wide = (n, rows) => {
     const cols = Array.from({ length: n }, (_, i) => 'Col' + (i + 1));
     const lines = [cols.join(',')].concat(Array.from({ length: rows }, (_, r) => cols.map((_, i) => 'r' + r + 'c' + i).join(',')));
     return { name: 'wide.csv', base64: Buffer.from(lines.join('\n')).toString('base64') };
   };
   const p60 = gas.previewFile(wide(60, 10));
-  assert.strictEqual(p60.columns.length, 54);
-  assert.strictEqual(p60.columns[53], 'BB');
+  assert.strictEqual(p60.columns.length, 60, 'all 60 columns shown');
+  assert.strictEqual(p60.columns[59], 'BH');
   assert.strictEqual(p60.totalColumns, 60);
   assert.strictEqual(p60.rows.length, 6);
-  assert.strictEqual(p60.rows[0][53], 'Col54');
+  assert.strictEqual(p60.rows[0][59], 'Col60');
+  assert.strictEqual(p60.header.length, 60);
+  assert.strictEqual(p60.header[59], 'Col60', 'header of column BH');
+  // Past the ZZ safety cap: the preview stops at ZZ, but the header row is complete.
+  const p750 = gas.previewFile(wide(750, 2));
+  assert.strictEqual(p750.columns.length, 702);
+  assert.strictEqual(p750.columns[701], 'ZZ');
+  assert.strictEqual(p750.rows[0].length, 702);
+  assert.strictEqual(p750.totalColumns, 750);
+  assert.strictEqual(p750.header.length, 750);
+  assert.strictEqual(p750.header[749], 'Col750', 'header of column ABV');
   assert.strictEqual(p60.totalRows, 11);
   const p25 = gas.previewFile(wide(25, 3));
   assert.strictEqual(p25.columns.length, 25);
@@ -735,6 +746,78 @@ test('preview shows up to column BB and reports the total column count', () => {
   // Columns after BB can still be mapped and read.
   const t = gas.normalizeMapping_(Object.assign({}, MAP, { details: [{ col: 'BH' }] }));
   assert.strictEqual(t.details[0].index, 59);
+});
+
+console.log('Version 3.3 — blank labels');
+
+const BLANK = Object.assign({}, MAP, {
+  details: [{ col: 'X', label: '' }, { col: 'Y', label: 'Shift' }],
+  groupBy: { col: 'W', label: '' },
+});
+
+test('blank labels are kept blank (no header or "Detail n" fallback); typed labels used as typed', () => {
+  const res = parse('sample-3-projects.csv', BLANK, { combineEmployees: true });
+  const m = inv(res, 'INV-3001');
+  assert.deepStrictEqual(plain(m.detailLabels), ['', 'Shift']);
+  assert.strictEqual(m.groupLabel, '');
+  const typed = inv(parse('sample-3-projects.csv', Object.assign({}, MAP, {
+    details: [{ col: 'X', label: 'Site' }], groupBy: { col: 'W', label: 'Job' } })), 'INV-3001');
+  assert.deepStrictEqual(plain(typed.detailLabels), ['Site']);
+  assert.strictEqual(typed.groupLabel, 'Job');
+  assert.strictEqual(I18N.en.detailDefault, undefined, 'no default label text left');
+});
+
+test('invoice: a blank label prints only the value; other labels unchanged', () => {
+  const res = parse('sample-3-projects.csv', BLANK, { combineEmployees: true });
+  const h = html(res, 'INV-3001');
+  has(h, '<tr class="grp"><td colspan="8">P-1001</td></tr>', 'group heading is just the value');
+  hasNot(h, 'Project Number');
+  hasNot(h, 'Location');
+  hasNot(h, 'Detail 1');
+  hasNot(h, 'Group:');
+  assert.ok(/<div class="detail">Stage \d/.test(h), 'detail is just the value');
+  has(h, '<div class="detail">Shift: ');
+  hasNot(h, '<div class="detail">: ', 'no stray colon');
+  hasNot(h, '<td colspan="8">: ', 'no stray colon in the heading');
+});
+
+test('blank group label keeps "(continued)" on later pages (French: "(suite)")', () => {
+  const en = html(parse('sample-6-long.csv', Object.assign({}, BLANK, { details: [] })));
+  assert.ok(/<td colspan="8">[^<:]+ \(continued\)<\/td>/.test(en), 'value + (continued), no label');
+  const fr = html(parse('sample-6-long.csv', Object.assign({}, BLANK, { details: [] }), { language: 'fr' }));
+  assert.ok(/<td colspan="8">[^<:]+ \(suite\)<\/td>/.test(fr));
+});
+
+test('sheet: blank labels are written as "(no label)"; rebuild keeps them blank; renaming adds the label', () => {
+  const res = generate('sample-3-projects.csv', BLANK);
+  const ss = world.sheets[res.sheetUrl.match(/d\/([^/]+)/)[1]];
+  const sh = ss.getSheets()[0];
+  assert.strictEqual(sh.grid[0][23], '(no label)', 'X header');
+  assert.strictEqual(sh.grid[0][24], '(no label)', 'Y header');
+  assert.strictEqual(sh.grid[0][25], 'Shift');
+  assert.ok(sh.grid.slice(1).some(r => r[23] === 'P-1001'), 'group values still written');
+  hasNot(pdfHtml(res).join(''), 'Project Number');
+  gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
+  let pdf = pdfHtml(res).join('');
+  has(pdf, '<td colspan="8">P-1001</td>', 'rebuild: still value only');
+  hasNot(pdf, '(no label)');
+  sh.grid[0][23] = 'Projet';
+  sh.grid[0][24] = '(SANS ÉTIQUETTE)'; // either language's marker, any case
+  gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
+  pdf = pdfHtml(res).join('');
+  has(pdf, 'Projet: P-1001', 'renamed marker = label appears');
+  hasNot(pdf, 'ÉTIQUETTE');
+  assert.ok(/<div class="detail">Stage \d/.test(pdf));
+  sh.grid[0][23] = '';
+  gas.rebuildFromSpreadsheet({ sheet: res.sheetUrl });
+  hasNot(pdfHtml(res).join(''), 'P-1001</td></tr>', 'empty X header still turns grouping off');
+});
+
+test('French sheet uses "(sans étiquette)"', () => {
+  const res = generate('sample-3-projects.csv', BLANK, { language: 'fr' });
+  const sh = world.sheets[res.sheetUrl.match(/d\/([^/]+)/)[1]].getSheets()[0];
+  assert.strictEqual(sh.grid[0][23], '(sans étiquette)');
+  assert.strictEqual(sh.grid[0][24], '(sans étiquette)');
 });
 
 if (process.argv.includes('--html')) {
@@ -747,7 +830,8 @@ if (process.argv.includes('--html')) {
    ['5-edge-cases', 'sample-5-edge-cases.csv', MAP, {}],
    ['6-long-en', 'sample-6-long.csv', withGroup(), {}],
    ['6-long-fr', 'sample-6-long.csv', withGroup(), { language: 'fr' }],
-   ['10-long-strings', 'sample-10-long-strings.csv', withGroup(), {}]].forEach(([name, file, map, o]) => {
+   ['10-long-strings', 'sample-10-long-strings.csv', withGroup(), {}],
+   ['3-blank-labels', 'sample-3-projects.csv', BLANK, { combineEmployees: true }]].forEach(([name, file, map, o]) => {
     fs.writeFileSync(path.join(out, name + '.html'), html(parse(file, map, o)));
   });
   console.log('Wrote invoice HTML to tests/out/');

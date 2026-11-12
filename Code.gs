@@ -25,7 +25,7 @@
 const ROOT_FOLDER_NAME = 'Invoice PDFs';
 const ROOT_FOLDER_KEY = 'rootFolderId';
 const MAX_PREVIEW_ROWS = 6;
-const MAX_PREVIEW_COLS = 54; // the preview shows columns A–BB (later columns can still be mapped by letter)
+const MAX_PREVIEW_COLS = 702; // the preview shows columns A–ZZ (a safety cap; later columns can still be mapped by letter)
 const MAX_EMAIL_LINKS = 50;
 const META_SHEET = '_meta';
 const REBUILD_TIMEOUT_MS = 7 * 60 * 1000; // a run can't last longer than 6 minutes
@@ -158,8 +158,7 @@ const I18N = {
     unitsTotal: 'Total',
     continued: '(continued)',
     page: (n, of) => 'Page ' + n + ' of ' + of,
-    groupDefault: 'Group',
-    detailDefault: 'Detail ',
+    noLabel: '(no label)',
     fileInvoice: 'Invoice',
     fileAll: 'All invoices',
     email: {
@@ -196,6 +195,7 @@ const I18N = {
         'Column X groups line items under a heading: its header is the heading label (leave it blank for no groups).\n\n' +
         'Columns Y to AH are extra details printed under each line item. The header is the label: rename it to change the ' +
         'label, or type a header in an empty column (up to AH) to add a detail.\n\n' +
+        'A header of "(no label)" keeps the group or detail but prints only its value, with no label.\n\n' +
         'After editing, use the "Rebuild PDF" link on the Settings tab.',
       settingHeader: ['Setting', 'Value', 'Help'],
       settings: {
@@ -229,8 +229,7 @@ const I18N = {
     unitsTotal: 'Total',
     continued: '(suite)',
     page: (n, of) => 'Page ' + n + ' de ' + of,
-    groupDefault: 'Groupe',
-    detailDefault: 'Détail ',
+    noLabel: '(sans étiquette)',
     fileInvoice: 'Facture',
     fileAll: 'Toutes les factures',
     sheet: {
@@ -248,6 +247,7 @@ const I18N = {
         'La colonne X regroupe les articles sous un titre : son en-tête sert d\'étiquette (laissez-le vide pour ne pas regrouper).\n\n' +
         'Les colonnes Y à AH sont des détails supplémentaires imprimés sous chaque article. L\'en-tête sert d\'étiquette : ' +
         'renommez-le pour changer l\'étiquette, ou tapez un en-tête dans une colonne vide (jusqu\'à AH) pour ajouter un détail.\n\n' +
+        'Un en-tête « (sans étiquette) » garde le groupe ou le détail, mais n\'imprime que sa valeur, sans étiquette.\n\n' +
         'Après vos modifications, utilisez le lien « Régénérer le PDF » dans l\'onglet Paramètres.',
       settingHeader: ['Paramètre', 'Valeur', 'Aide'],
       settings: {
@@ -315,9 +315,13 @@ function previewFile(file) {
     const width = Math.min(MAX_PREVIEW_COLS, totalColumns);
     const columns = [];
     for (let i = 0; i < width; i++) columns.push(indexToCol_(i));
+    const first = rows[0] || [];
+    const header = [];
+    for (let i = 0; i < totalColumns; i++) header.push(first[i] == null ? '' : String(first[i]).trim());
     return {
       columns: columns,
       rows: rows.slice(0, MAX_PREVIEW_ROWS).map(r => columns.map((_, i) => r[i] == null ? '' : String(r[i]))),
+      header: header, // the whole first row, every column (used to fill in labels, even past the preview)
       totalRows: rows.length,
       totalColumns: totalColumns,
     };
@@ -382,20 +386,16 @@ function generateInvoices(request) {
 function parseUpload_(request, jobId, run) {
   const mapping = normalizeMapping_(request.mapping || {});
   const opts = normalizeOptions_(request.options || {});
-  const L = I18N[opts.language];
   if (!request.file || !request.file.base64) throw userError_('Please choose a CSV or XLSX file first.');
 
   const data = readRows_(request.file, jobId);
   if (run) log_(run, 'file_read', { rows: data.rows.length, hiddenRows: data.hiddenRows || 0 });
   let rows = data.rows, rowNums = data.rowNumbers;
-  const headerRow = opts.hasHeader ? (rows[0] || []) : [];
   if (opts.hasHeader) { rows = rows.slice(1); rowNums = rowNums.slice(1); }
   opts.decimalComma = opts.numberFormat === 'auto' ? data.decimalComma : opts.numberFormat === 'comma';
   opts.taxRates = getTaxRates_().rates;
-  const header = i => String(headerRow[i] == null ? '' : headerRow[i]).trim();
-  // Labels: what the user typed, else the column's header, else a default.
-  mapping.details.forEach((d, n) => { d.label = d.label || header(d.index) || L.detailDefault + (n + 1); });
-  if (mapping.groupBy) mapping.groupBy.label = mapping.groupBy.label || header(mapping.groupBy.index) || L.groupDefault;
+  // Labels are used exactly as typed on the form. A blank label stays blank: the invoice prints only the value.
+  // (The form fills a label box with the column's header, and the user may edit or clear it.)
 
   const grouped = groupInvoices_(rows, mapping, opts, rowNums);
   if (run) log_(run, 'parsed', { invoices: grouped.invoices.length, skipped: grouped.skipped.length, notes: grouped.notes.length });
@@ -1028,7 +1028,10 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
   const opts = parsed.opts, grouped = parsed.grouped;
   const L = I18N[opts.language], S = L.sheet;
   const labels = grouped.detailLabels || [];
-  const groupLabel = parsed.mapping.groupBy ? parsed.mapping.groupBy.label : '';
+  const grouping = !!parsed.mapping.groupBy;
+  // An empty header means "no column" in the sheet, so a blank label is written as a marker instead.
+  const sheetLabel = label => label ? cellText_(label) : L.noLabel;
+  const groupHeader = grouping ? sheetLabel(parsed.mapping.groupBy.label) : '';
   const width = SHEET_BASE_WIDTH + labels.length;
   const accent = accent_();
   const ss = SpreadsheetApp.create(S.fileName(safeName_(sourceName.replace(/\.[^.]+$/, ''))));
@@ -1052,7 +1055,7 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
           cellText_(it.lineType), it.unitsCell, it.rateCell,
           '',                                         // Amount: filled by the ARRAYFORMULA below
           first ? cellText_(inv.taxCodeRaw) : '',
-          groupLabel ? cellText_(it.group) : '',
+          grouping ? cellText_(it.group) : '',
         ])
         .concat(it.details.map(cellText_)));
     });
@@ -1062,7 +1065,7 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
   items.getRange('W2:AH').setNumberFormat('@');
   items.getRange('T2:T').setNumberFormat('0.###');
   items.getRange('U2:V').setNumberFormat('#,##0.00');
-  items.getRange(1, 1, 1, width).setValues([S.headers.concat([groupLabel]).concat(labels.map(cellText_))])
+  items.getRange(1, 1, 1, width).setValues([S.headers.concat([groupHeader]).concat(labels.map(sheetLabel))])
     .setFontWeight('bold').setBackground(accent).setFontColor('#ffffff');
   items.getRange(2, 1, rows.length, width).setValues(rows);
   items.getRange('V2').setFormula('=ARRAYFORMULA(IF(A2:A="","",IFERROR(VALUE(T2:T),0)*IFERROR(VALUE(U2:U),0)))');
@@ -1110,7 +1113,7 @@ function createInvoiceSpreadsheet_(folder, parsed, jobId, sourceName, originalId
     created: new Date().toISOString(),
     lastBuilt: '',
     busyUntil: '',
-    grouping: groupLabel ? 'true' : 'false',
+    grouping: grouping ? 'true' : 'false',
     taxRates: opts.taxRates,
     files: {},
   });
@@ -1139,11 +1142,12 @@ function renderFromSpreadsheet_(ss, run) {
   const all = sheetToRows_(items.getDataRange(), ss.getSpreadsheetTimeZone());
   const header = all[0] || [];
   const text = i => String(header[i] == null ? '' : header[i]).trim();
+  const label = i => isNoLabel_(text(i)) ? '' : text(i); // "(no label)" = keep the column, print no label
   const details = [];
   for (let c = SHEET_DETAIL_START; c < SHEET_DETAIL_START + MAX_DETAILS; c++) {
-    if (text(c)) details.push({ index: c, label: text(c) });
+    if (text(c)) details.push({ index: c, label: label(c) });
   }
-  const groupBy = text(SHEET_GROUP_COL) ? { index: SHEET_GROUP_COL, label: text(SHEET_GROUP_COL) } : null;
+  const groupBy = text(SHEET_GROUP_COL) ? { index: SHEET_GROUP_COL, label: label(SHEET_GROUP_COL) } : null;
   const body = all.slice(1);
   const grouped = groupInvoices_(body, Object.assign({}, SHEET_MAP, { details: details, groupBy: groupBy }), opts,
     body.map((_, i) => i + 2));
@@ -1166,6 +1170,17 @@ function renderFromSpreadsheet_(ss, run) {
   writeMeta_(ss, meta);
   return { output: output, skipped: grouped.skipped, notes: grouped.notes, warnings: branding.warnings,
            opts: opts, L: L, meta: meta, folder: folder };
+}
+
+/** True for the sheet's "blank label" marker, in either language (any case). */
+function isNoLabel_(s) {
+  const t = String(s || '').trim().toLowerCase();
+  return t === I18N.en.noLabel.toLowerCase() || t === I18N.fr.noLabel.toLowerCase();
+}
+
+/** "Label: value", or just "value" when the label is blank. */
+function labelled_(label, value) {
+  return label ? label + ': ' + value : value;
 }
 
 function sanitizeRates_(r) {
@@ -1861,7 +1876,7 @@ function lineHeight_(ln, labels) {
   // columns sit beside it, so the row is as tall as the tallest column.
   let detailLines = 0;
   labels.forEach((label, d) => {
-    if (ln.details[d] && ln.details[d].length) detailLines += textLines_(label + ': ' + ln.details[d].join(', '), 32);
+    if (ln.details[d] && ln.details[d].length) detailLines += textLines_(labelled_(label, ln.details[d].join(', ')), 32);
   });
   const first = textLines_(ln.candidate, 23) * PAGE.TEXT_LINE + detailLines * PAGE.DETAIL_LINE;
   const others = Math.max(textLines_(ln.workOrder, 11), textLines_(ln.purchaseOrder, 11),
@@ -1947,7 +1962,7 @@ function paginateInvoice_(inv, branding) {
 }
 
 function groupRowHeight_(inv, g) {
-  return PAGE.GROUP_ROW + (textLines_(inv.groupLabel + ': ' + g.value + ' (continued)', 100) - 1) * PAGE.TEXT_LINE;
+  return PAGE.GROUP_ROW + (textLines_(labelled_(inv.groupLabel, g.value) + ' (continued)', 100) - 1) * PAGE.TEXT_LINE;
 }
 
 /**
@@ -2021,12 +2036,12 @@ function itemsTableHtml_(rows, inv, L) {
   const body = rows.map(r => {
     if (r.type === 'group') {
       stripe = 0;
-      return '<tr class="grp"><td colspan="8">' + softText_(inv.groupLabel) + ': ' + softText_(r.group.value) +
+      return '<tr class="grp"><td colspan="8">' + (inv.groupLabel ? softText_(inv.groupLabel) + ': ' : '') + softText_(r.group.value) +
         (r.continued ? ' ' + esc_(L.continued) : '') + '</td></tr>';
     }
     const ln = r.line;
     const details = labels.map((label, d) => ln.details[d] && ln.details[d].length
-      ? '<div class="detail">' + softText_(label) + ': ' + multi(ln.details[d].join(', ')) + '</div>' : '').join('');
+      ? '<div class="detail">' + (label ? softText_(label) + ': ' : '') + multi(ln.details[d].join(', ')) + '</div>' : '').join('');
     return '<tr' + (stripe++ % 2 ? ' class="alt"' : '') + '>' +
       '<td>' + multi(ln.candidate) + details + '</td>' +
       '<td>' + softText_(ln.workOrder) + '</td>' +

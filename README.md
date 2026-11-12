@@ -11,15 +11,16 @@ A link is emailed (in English) to the person who submitted the form.
 ## How it works
 
 1. **Presets (optional).** Pick a saved preset to fill in the whole form. Your *default* preset fills it in as soon as the page opens, so for a fixed export format the routine is: **open the page → upload the file → Generate**.
-2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows with column letters, up to column **BB**. Columns after BB aren't shown, but you can still type their letters (e.g. `BC`) in the boxes. With **Pin preview** on (the default on computers, off on phones; your choice is remembered), the preview stays at the top of the screen while you fill in the rest of the form. Rows hidden in Excel (by a filter or by hand) are left out.
+2. **Upload** a `.csv` or `.xlsx` file. A preview shows the first rows of **every column**, with column letters (scroll sideways for wide files). Only files wider than column **ZZ** (702 columns) are cut off in the preview; you can still type later letters (e.g. `AAA`), and their labels are still filled in. With **Pin preview** on (the default on computers, off on phones; your choice is remembered), the preview stays at the top of the screen while you fill in the rest of the form. Rows hidden in Excel (by a filter or by hand) are left out.
    - **Clear form** (top of the form, click twice) resets every column box, label and option and deselects the preset. The uploaded file, saved presets and the default preset stay.
 3. **Match columns.** Type a column letter for each field, or click a box and then a column letter in the preview. ✱ = required.
    - **Invoice:** Invoice number ✱, Client number, Invoice date, Payment due date
    - **Client (bill to):** Client name ✱, Attention (ATTN), Address 1, Address 2, Address 3, Address 4, City, State / Province, Postal code, Country
    - **Work / line items:** Candidate / Role, Work order, Purchase order, Work date (Period), Line type ✱, Units, Rate ✱
    - **Other:** Tax code
-   - **Group line items by** (optional): a column letter and a heading label (defaults to the column's header), e.g. `Project Number: P-1001`.
+   - **Group line items by** (optional): a column letter and a heading label, e.g. `Project Number: P-1001`.
    - **Extra details** (optional, up to 10): a column letter and a label for each, printed as small lines under the line item, e.g. `Location: Studio A`.
+   - **Labels:** when you enter a column letter, the label box is filled in with that column's header as ordinary text you can edit. **Leave a label empty to print only the value** (`Studio A`, `P-1001`). A label you've typed in or cleared is never changed automatically, even after a new upload; a preset's labels (blank ones included) are kept exactly; Clear form starts the auto-fill over.
    - **File settings:** "The first row is a header row", the date order (auto / MM/DD / DD/MM) and the number style (auto / `1,234.56` / `1 234,56`).
 4. **Output and delivery.**
    - **Language:** English or Français. Every word on the invoice follows this choice.
@@ -111,7 +112,7 @@ The job folder contains `Invoices - <file> (editable)` (`Factures - <file> (modi
 
 | Tab | What's in it |
 |---|---|
-| **Invoices** / **Factures** | One row per record: A invoice #, B client #, C invoice date, D payment due date, E client, F ATTN, G–J address 1–4, K city, L state/province, M postal code, N country, O candidate/role, P work order, Q purchase order, R work date, S line type, T units, U rate, V *amount (calculated)*, W tax code (dropdown), **X group** (the header is the group heading label; blank = no groups), **Y–AH extra details** (the header is the label). Invoice details and the address are read from the **first row** of each invoice. Dates are stored as `yyyy-mm-dd`. |
+| **Invoices** / **Factures** | One row per record: A invoice #, B client #, C invoice date, D payment due date, E client, F ATTN, G–J address 1–4, K city, L state/province, M postal code, N country, O candidate/role, P work order, Q purchase order, R work date, S line type, T units, U rate, V *amount (calculated)*, W tax code (dropdown), **X group** (the header is the group heading label; blank = no groups), **Y–AH extra details** (the header is the label). A header of `(no label)` (French: `(sans étiquette)`) keeps the group or detail but prints only its value; type a label over it to add one. Invoice details and the address are read from the **first row** of each invoice. Dates are stored as `yyyy-mm-dd`. |
 | **Settings** / **Paramètres** | Language (`en`/`fr`), PDF output (`combined`/`separate`), combine lines (`yes`/`no`), and the **Rebuild PDF** link. |
 | `_meta` (hidden) | Records the job's files and tax rates. Don't edit it. |
 

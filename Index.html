@@ -180,16 +180,16 @@
       <p class="preview-note" style="margin-top:10px">Accepted tax codes (any capitalisation): <strong>EXEMPT, GST, HST, NSHST, ONHST, PEI, QST</strong>, or the French TPS, TVH, NETVH, ONTVH, IPE. A blank or unknown code is invoiced as EXEMPT, with a note.</p>
 
       <div class="group-title" style="margin-top:20px">Group line items by <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">· optional</span></div>
-      <p class="help" style="margin:8px 0 0">Lines are listed under a heading for each value in this column, e.g. <em>Project Number: P-1001</em>. Totals are not affected. The heading label defaults to that column's header.</p>
+      <p class="help" style="margin:8px 0 0">Lines are listed under a heading for each value in this column, e.g. <em>Project Number: P-1001</em>. Totals are not affected. The heading label is filled in from that column's header; edit it, or leave it empty to print only the value.</p>
       <div class="details">
         <div class="detail-row">
           <input type="text" class="col" id="groupCol" maxlength="3" autocomplete="off" placeholder="–" aria-label="Group line items by: column">
-          <input type="text" class="dlabel" id="groupLabel" maxlength="60" placeholder="Heading label (optional)" aria-label="Group heading label">
+          <input type="text" class="dlabel" id="groupLabel" maxlength="60" placeholder="Label (blank = no label)" aria-label="Group heading label">
         </div>
       </div>
 
       <div class="group-title" style="margin-top:20px">Extra details <span style="text-transform:none;letter-spacing:0;font-weight:400;color:var(--muted)">· optional, up to 10</span></div>
-      <p class="help" style="margin:8px 0 0">Each extra detail is printed as a small line under its line item, e.g. <em>Location: Studio A</em>. Enter the column letter; the label defaults to that column's header.</p>
+      <p class="help" style="margin:8px 0 0">Each extra detail is printed as a small line under its line item, e.g. <em>Location: Studio A</em>. Enter the column letter and the label is filled in from that column's header. Edit it, or leave a label empty to print only the value.</p>
       <div class="details" id="detailFields"></div>
       <label class="check"><input type="checkbox" id="hasHeader" checked> The first row is a header row (skip it)</label>
       <div class="grid" style="margin-top:12px;grid-template-columns:repeat(auto-fill,minmax(260px,320px))">
@@ -275,7 +275,7 @@
   var fileData = null;          // { name, base64 }
   var lastFocused = null;       // column-letter input last focused
   var MAX_DETAILS = 10;
-  var previewHeader = [];       // header row from the preview, for detail-label placeholders
+  var previewHeader = [];       // the file's whole header row (every column), for filling in labels
   var OPTION_IDS = ['dateFormat','numberFormat'];
   var RADIO_NAMES = ['language','outputMode'];
   var previewToken = 0;         // ignores late previews when the file is changed quickly
@@ -317,7 +317,7 @@
       .rebuildFromSpreadsheet({ sheet: link, notify: document.getElementById('rebuildNotify').checked });
   });
 
-  document.getElementById('hasHeader').addEventListener('change', function () { updateDetailPlaceholders(); checkHeaders(); });
+  document.getElementById('hasHeader').addEventListener('change', function () { fillLabels(); checkHeaders(); });
 
   // ---------- Setup ----------
   var userEmail = '';
@@ -367,7 +367,7 @@
     for (var n = 0; n < MAX_DETAILS; n++) {
       d += '<div class="detail-row"><span class="num-label">' + (n + 1) + '</span>' +
         '<input type="text" class="col" id="dcol_' + n + '" data-detail="' + n + '" maxlength="3" autocomplete="off" placeholder="–" aria-label="Extra detail ' + (n + 1) + ' column">' +
-        '<input type="text" class="dlabel" id="dlabel_' + n + '" maxlength="60" placeholder="Label (optional)" aria-label="Extra detail ' + (n + 1) + ' label"></div>';
+        '<input type="text" class="dlabel" id="dlabel_' + n + '" maxlength="60" placeholder="Label (blank = no label)" aria-label="Extra detail ' + (n + 1) + ' label"></div>';
     }
     document.getElementById('detailFields').innerHTML = d;
     document.querySelectorAll('input.col').forEach(function (inp) {
@@ -376,8 +376,12 @@
         inp.value = inp.value.replace(/[^a-z]/gi, '').toUpperCase();
         inp.classList.remove('invalid');
         highlightMapped();
-        updateDetailPlaceholders();
+        fillLabels();
       });
+    });
+    // A label the user types in (or clears) is theirs: auto-fill never changes it again.
+    labelPairs().forEach(function (p) {
+      p.label.addEventListener('input', function () { p.label.dataset.userSet = '1'; });
     });
   }
 
@@ -428,6 +432,11 @@
     var grp = m.groupBy || {};
     document.getElementById('groupCol').value = grp.col || '';
     document.getElementById('groupLabel').value = grp.label || '';
+    // Labels that come with a column (from a preset or last-used settings) are kept exactly,
+    // blank ones included. Everything else, and the whole form after Clear form, is auto-filled again.
+    labelPairs().forEach(function (p) {
+      if (p.col.value) p.label.dataset.userSet = '1'; else delete p.label.dataset.userSet;
+    });
     OPTION_IDS.forEach(function (id) {
       var el = document.getElementById(id);
       el.value = pick(o[id], d.options[id]);
@@ -443,7 +452,7 @@
     });
     document.querySelectorAll('input.invalid').forEach(function (i) { i.classList.remove('invalid'); });
     highlightMapped();
-    updateDetailPlaceholders();
+    fillLabels();
   }
 
   // ---------- Presets ----------
@@ -691,18 +700,29 @@
     reader.readAsDataURL(file);
   }
 
-  function updateDetailPlaceholders() {
-    var useHeader = document.getElementById('hasHeader').checked;
+  /** Each label box with its column box: the 10 extra details, then the group heading. */
+  function labelPairs() {
+    var out = [];
     for (var n = 0; n < MAX_DETAILS; n++) {
-      var col = document.getElementById('dcol_' + n).value;
-      var idx = col ? colIndex(col) : -1;
-      var head = useHeader && idx >= 0 && previewHeader[idx] ? previewHeader[idx] : '';
-      document.getElementById('dlabel_' + n).placeholder = head || 'Label (optional)';
+      out.push({ col: document.getElementById('dcol_' + n), label: document.getElementById('dlabel_' + n) });
     }
-    var gcol = document.getElementById('groupCol').value;
-    var gidx = gcol ? colIndex(gcol) : -1;
-    var ghead = useHeader && gidx >= 0 && previewHeader[gidx] ? previewHeader[gidx] : '';
-    document.getElementById('groupLabel').placeholder = ghead || 'Heading label (optional)';
+    out.push({ col: document.getElementById('groupCol'), label: document.getElementById('groupLabel') });
+    return out;
+  }
+
+  /**
+   * Puts the column's header into each label box as ordinary, editable text.
+   * Boxes the user has typed in or cleared (or that a preset filled) are left alone.
+   * Runs when a column letter changes, when a file is loaded and when the header option changes.
+   */
+  function fillLabels() {
+    var useHeader = document.getElementById('hasHeader').checked;
+    labelPairs().forEach(function (p) {
+      if (p.label.dataset.userSet) return;
+      var col = p.col.value;
+      var head = useHeader && col && /^[A-Z]{1,3}$/.test(col) ? previewHeader[colIndex(col)] : '';
+      p.label.value = head ? String(head).trim().slice(0, 60) : '';
+    });
   }
   /** 0 → "A", 53 → "BB" */
   function colLetter(i) {
@@ -717,7 +737,7 @@
   }
 
   function renderPreview(p) {
-    previewHeader = p.rows[0] || [];
+    previewHeader = p.header || p.rows[0] || [];
     var t = document.getElementById('preview');
     var head = '<tr><th style="cursor:default"></th>' + p.columns.map(function (c) {
       return '<th data-col="' + c + '" title="Click to assign column ' + c + '">' + c + '</th>';
@@ -733,14 +753,14 @@
         lastFocused.value = th.dataset.col;
         lastFocused.classList.remove('invalid');
         highlightMapped();
-        updateDetailPlaceholders();
+        fillLabels();
         // Advance to the next empty letter box for fast mapping
         var inputs = Array.prototype.slice.call(document.querySelectorAll('input.col'));
         var next = inputs.slice(inputs.indexOf(lastFocused) + 1).find(function (i) { return !i.value; });
         if (next) next.focus(); else lastFocused.focus();
       });
     });
-    // Describe exactly what's shown: rows, and the column range (the preview stops at BB).
+    // Describe exactly what's shown: rows, and the column range (the preview shows every column up to ZZ).
     var lastCol = p.columns[p.columns.length - 1] || 'A';
     var total = p.totalColumns || p.columns.length;
     document.getElementById('previewNote').textContent =
@@ -752,7 +772,7 @@
     document.getElementById('previewArea').classList.remove('hidden');
     document.getElementById('previewDock').classList.remove('hidden');
     highlightMapped();
-    updateDetailPlaceholders();
+    fillLabels();
     checkHeaders();
   }
 
