@@ -130,7 +130,7 @@ test('French PDF HTML: French labels, English-style numbers, Permis QC, French f
    'PRIVÉE &amp; CONFIDENTIELLE', 'Candidat', 'Référence', 'Bon de commande', 'Période', 'Unité(s)', 'Taux', 'Montant',
    'ATTN: Comptes fournisseurs', 'Sommaire des unités', 'Sous-total', 'TPS (5%)', 'TVQ (9.975%)', '$77.80', '$155.21',
    'Total (CAD)', '$1,789.01', '$1,050.00', 'T. 725-555-6458', 'TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001',
-   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution bancaire:', 'N° succursale bancaire:', 'N° de compte:',
+   'Permis QC 000000', 'Paiement par TEF', 'N° d&#39;institution bancaire:', 'N° de succursale bancaire:', 'N° de compte:',
    '1234 Alexander Street', 'Saint-Laurent QC H4R 1Y8', 'ABC Store', 'Page 1 de 1'].forEach(s => has(h, s));
   ['PRIVATE', 'HST/GST', 'Invoice Date', '1 050,00', '9,975', 'rue Alexander', 'Bank ID'].forEach(s => hasNot(h, s));
 });
@@ -487,7 +487,7 @@ test('same company and bank details in both languages; only labels change; Frenc
   assert.deepStrictEqual(plain(fr.company.gov), ['TVH/TPS # 000000000 RT0001', 'TVQ # 0000000000 TQ0001', 'Permis QC 000000']);
   assert.deepStrictEqual(plain(en.footer.bankAddress), plain(fr.footer.bankAddress));
   assert.deepStrictEqual(plain(en.footer.bankDetails), [['Bank ID', '007'], ['Bank Transit', '12345'], ['Account #', '12312312323']]);
-  assert.deepStrictEqual(plain(fr.footer.bankDetails), [["N° d'institution bancaire", '007'], ['N° succursale bancaire', '12345'], ['N° de compte', '12312312323']]);
+  assert.deepStrictEqual(plain(fr.footer.bankDetails), [["N° d'institution bancaire", '007'], ['N° de succursale bancaire', '12345'], ['N° de compte', '12312312323']]);
   assert.strictEqual(fr.footer.paymentTitle, 'Paiement par TEF');
   const savedFr = JSON.stringify(C.FOOTER_TEXT.fr);
   C.FOOTER_TEXT.fr.remittance = '';
